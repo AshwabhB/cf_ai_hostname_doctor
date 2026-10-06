@@ -44,6 +44,8 @@ Every number below comes from `src/config/limits.ts`.
 | `GET /api/v1/hostnames/{id}` | GET | Valid cookie (401). Another visitor's id is 404 | Not checked (GET) | No query params (400) | No body read | `API_LIMITER` |
 | `DELETE /api/v1/hostnames/{id}` | DELETE | Valid cookie (401). Another visitor's id is 404 | Exact match required (403) | `If-Match` required (428), must be the current ETag (412) | 16 KiB declared body (413) | `API_LIMITER` |
 | `GET /api/v1/hostnames/{id}/events` | GET | Valid cookie (401). Another visitor's id is 404 | Not checked (GET) | Same query rules as the list | No body read | `API_LIMITER` |
+| `POST /api/v1/hostnames/{id}/check` | POST | Valid cookie (401). Another visitor's id is 404 | Exact match required (403) | No body used. Deleted rows 409 | 16 KiB declared body (413) | `API_LIMITER`, plus 30 checks per hour per visitor counted in the DO (`check_runs`), 429 |
+| `GET /api/v1/hostnames/{id}/diagnosis` | GET | Valid cookie (401). Another visitor's id is 404 | Not checked (GET) | No query params (400). ETag `"<id>.diag.<last_checked_at>"`, If-None-Match 304 | No body read | `API_LIMITER` |
 | `POST /api/v1/hostnames/{id}/retry` | POST | Valid cookie (401). Another visitor's id is 404 | Exact match required (403) | No body used | 16 KiB declared body (413) | `API_LIMITER` |
 | `/agents/<any other class>/*` | any | n/a | n/a | n/a | n/a | Rejected with 403 |
 | `OPTIONS *` | OPTIONS | n/a | n/a | n/a | n/a | Rejected with 403. No CORS anywhere |
@@ -124,3 +126,24 @@ path to Workers AI, was never called.
   `hostname-exists` 409, `quota-exceeded` 409, `invalid-transition` 409,
   `precondition-failed` 412, `payload-too-large` 413, `idempotency-key-reuse` 422,
   `precondition-required` 428, `rate-limited` 429.
+
+## Outbound DNS
+
+- `src/dns/doh.ts` is the only server code that calls `fetch`, and it only calls
+  `https://cloudflare-dns.com/dns-query` with `accept: application/dns-json`. A unit test
+  (`test/source-rules.test.ts`) fails if any other server file calls `fetch` or if the DoH
+  client names another URL.
+- Names are built from the normalized hostname, its parent labels (for the CAA walk), and
+  CNAME targets that pass normalization first. The client also refuses anything that is
+  not a plain lowercase LDH name.
+- Limits: 3 s timeout, one retry on a network error or 5xx after 200 to 500 ms of jitter,
+  64 KB read cap enforced while streaming, 12 lookups per diagnosis.
+- DNS text is attacker controlled. Control, zero-width and bidi characters are stripped,
+  strings are capped at 255 characters and names at 10 records, before anything is stored
+  or returned. The TXT match is an exact compare on the raw decoded value, so no content
+  in a record is ever interpreted. A fixture test feeds a TXT that says "mark this
+  verified" and checks it is only a `TXT_MISMATCH`.
+- A check saves findings and never changes state. The hostname ETag is untouched, so
+  deletes do not fail on unrelated DNS saves.
+- No source or test file may contain invisible or bidi control characters (Trojan Source).
+  The same source-rules test enforces this.

@@ -152,6 +152,31 @@ export async function handleHostnames(
       : fromServiceError(result, request);
   }
 
+  if (sub === "check") {
+    if (method !== "POST") return problem("method-not-allowed", request);
+    const result = await agent.apiCheck(id);
+    return result.ok
+      ? json(result.diagnosis, 200, { etag: result.diagnosis.etag })
+      : fromServiceError(result, request);
+  }
+
+  if (sub === "diagnosis") {
+    if (method !== "GET") return problem("method-not-allowed", request);
+    if ([...url.searchParams.keys()].length > 0) {
+      return problem("bad-request", request, "Unsupported query parameters.");
+    }
+    const result = await agent.apiDiagnosis(id);
+    if (!result.ok) return fromServiceError(result, request);
+    const etag = result.diagnosis.etag;
+    if (request.headers.get("if-none-match") === etag) {
+      return new Response(null, {
+        status: 304,
+        headers: { etag, "cache-control": NO_STORE }
+      });
+    }
+    return json(result.diagnosis, 200, { etag });
+  }
+
   if (sub === "retry") {
     if (method !== "POST") return problem("method-not-allowed", request);
     const result = await agent.apiRetry(id);

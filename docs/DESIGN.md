@@ -90,6 +90,8 @@ require a same-origin `Origin` header.
 | POST   | /hostnames/{id}/retry        | allowed from `failed` or `conflict` only                |
 | DELETE | /hostnames/{id}              | `If-Match` required (428). Stale gives 412. 202 then `deleting` |
 
+Paging: `limit` defaults to 20 and is capped at 50 (`LIMITS.paging` in limits.ts).
+
 Idempotency: same key and same body hash replays the stored response. Same key with a
 different body gives 422 `idempotency-key-reuse`. Keys expire after the TTL in limits.ts.
 
@@ -133,22 +135,50 @@ ownership. A reconcile pass runs on a TenantAgent alarm (interval in limits.ts) 
 
 ## 7. DNS rules
 
-Resolution uses DNS over HTTPS with a timeout and the `dns_cache` table. Rules are pure
-functions from `(hostname, expected, answers)` to findings:
-`{ code, severity, record, expected, observed }`.
+Resolution uses DNS over HTTPS (`https://cloudflare-dns.com/dns-query`, JSON), the only
+outbound fetch in the code, with the `dns_cache` table. Limits live in limits.ts: 3 s timeout,
+one retry on a network error or 5xx with 200 to 500 ms jitter, 64 KB read cap, 12 lookups
+per diagnosis. Answers are cached for min(TTL, 60 s), SERVFAIL for at most 10 s, timeouts not
+at all. Only normalized hostnames are looked up.
 
-Codes: `HOSTNAME_INVALID`, `NXDOMAIN`, `SERVFAIL`, `DNS_TIMEOUT`, `TXT_MISSING`,
-`TXT_MISMATCH`, `TXT_MULTIPLE`, `CNAME_MISSING`, `CNAME_WRONG_TARGET`, `CAA_BLOCKS`.
+Rules are pure functions from the lookup results to findings:
+`{ code, severity, record, expected, observed, message }`. Severity is `error`, `warning`
+or `info`. A hostname is verifiable only when no finding is an `error`, computed by
+`isVerifiable(findings)` in code.
+
+| Code | Severity | When |
+|---|---|---|
+| `TXT_MISSING` | error | No TXT at `_cf-custom-hostname.<hostname>` |
+| `TXT_MISMATCH` | error | TXT records exist but none equals the tenant's token |
+| `TXT_MULTIPLE` | warning | One TXT matches and others are also present |
+| `CNAME_MISSING` | warning | No CNAME at the hostname |
+| `CNAME_WRONG_TARGET` | warning | The CNAME chain (up to 3 hops) never reaches `FALLBACK_ORIGIN` |
+| `APEX_CNAME` | info | The hostname is a registrable domain, which cannot hold a CNAME. Suggests CNAME flattening or ALIAS to `FALLBACK_ORIGIN`. CNAME checks are skipped |
+| `NXDOMAIN` | warning | The hostname itself does not exist |
+| `CAA_BLOCKS` | error | The first non-empty CAA set walking up from the hostname (RFC 8659) has `issue` tags and none allows `letsencrypt.org`, `pki.goog` or `ssl.com`, or it has an unknown critical tag |
+| `SERVFAIL`, `DNS_TIMEOUT`, `DNS_ERROR` | error for the TXT and CAA lookups, warning for CNAME | The lookup failed, timed out, or returned an oversized or malformed answer, or the lookup budget ran out |
+
+TXT proves ownership. The CNAME only routes traffic, which is why CNAME findings are
+warnings, as in Cloudflare for SaaS.
 
 - Expected records: TXT at `_cf-custom-hostname.<hostname>` holding the tenant's token, and
-  a CNAME from `<hostname>` to the `FALLBACK_ORIGIN` var (placeholder until S4).
-- Hostname normalization: lowercase, IDNA to punycode, strip trailing dot, length limits,
-  reject IP literals, wildcards, single labels and our own zone.
-- Verified means: no finding with severity `error`. Computed by `isVerified(findings)` in code.
+  a CNAME from `<hostname>` to the `FALLBACK_ORIGIN` var
+  (`hostname-doctor.bhatnagarashwabh.workers.dev`).
+- Hostname normalization (S3): trim, lowercase, strip a trailing dot, UTS #46 to punycode,
+  253 characters and 63 per label, letters, digits and hyphens with no hyphen at a label
+  edge, at least two labels. IPs, wildcards, reserved suffixes (`.test`, `.invalid`,
+  `.example`, `.local`, `.internal`, `.localhost`) and bare public suffixes are refused.
 - TXT match is an exact string compare against the tenant's own token. Nothing else in a
   TXT value is interpreted.
-- The model gets finding codes plus `observed` values that are truncated, escaped and
-  wrapped as quoted data. It never gets to decide pass or fail.
+- DNS text is attacker controlled. Before it is stored or shown, control, zero-width and bidi
+  characters are stripped, each string is capped at 255 characters and each name at 10
+  records. It is data only.
+- `POST /hostnames/{id}/check` runs a diagnosis and saves findings and `last_checked_at`
+  without changing state (30 per hour per visitor). `GET /hostnames/{id}/diagnosis` returns
+  them with an ETag built from `last_checked_at`, so the hostname ETag changes only on
+  transitions. State changes on DNS results are the workflow's job (S6).
+- The model gets finding codes plus sanitized `observed` values wrapped as quoted data. It
+  never gets to decide pass or fail.
 
 ## 8. Chat agent
 

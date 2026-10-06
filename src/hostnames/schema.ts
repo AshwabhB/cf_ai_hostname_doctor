@@ -55,6 +55,12 @@ const MIGRATIONS: readonly string[][] = [
     )`,
     // evict expired answers
     `CREATE INDEX dns_cache_expires ON dns_cache (expires_at)`
+  ],
+  // 2: manual DNS checks, for the per-visitor hourly limit.
+  [
+    `CREATE TABLE check_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL)`,
+    // count and prune runs in the last hour
+    `CREATE INDEX check_runs_at ON check_runs (at)`
   ]
 ];
 

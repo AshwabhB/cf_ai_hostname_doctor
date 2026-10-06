@@ -16,6 +16,10 @@ import {
 import { modelFactory } from "./ai/model";
 import { LIMITS } from "./config/limits";
 import { SESSION_EXPIRED_CLOSE } from "./config/protocol";
+import { SqlDnsCache } from "./dns/cache";
+import { diagnose } from "./dns/diagnose";
+import { DohClient, defaultDohDeps } from "./dns/doh";
+import { DiagnosisService } from "./hostnames/diagnosis";
 import { migrate } from "./hostnames/schema";
 import {
   HostnameService,
@@ -53,6 +57,7 @@ export class TenantAgent extends AIChatAgent<Env> {
   private frameLimiter = new FrameRateLimiter();
   private migrated = false;
   private _hostnames: HostnameService | null = null;
+  private _diagnoses: DiagnosisService | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -140,6 +145,24 @@ export class TenantAgent extends AIChatAgent<Env> {
     return this._hostnames;
   }
 
+  private get diagnoses(): DiagnosisService {
+    this.ensureSchema();
+    this._diagnoses ??= new DiagnosisService(this.ctx.storage, {
+      // A fresh client per diagnosis, so each one gets its own lookup budget.
+      diagnose: ({ hostname, token }) =>
+        diagnose(
+          new DohClient(defaultDohDeps(new SqlDnsCache(this.ctx.storage.sql))),
+          {
+            hostname,
+            token,
+            fallbackOrigin: this.env.FALLBACK_ORIGIN
+          }
+        ),
+      now: () => Date.now()
+    });
+    return this._diagnoses;
+  }
+
   // RPC for the Worker's REST routes. Not @callable, so browsers cannot reach them.
   apiList(limit?: number, cursor?: string) {
     return this.hostnames.list({ limit, cursor });
@@ -163,6 +186,14 @@ export class TenantAgent extends AIChatAgent<Env> {
 
   apiRetry(id: string) {
     return this.hostnames.retry(id, "user");
+  }
+
+  apiCheck(id: string) {
+    return this.diagnoses.check(id);
+  }
+
+  apiDiagnosis(id: string) {
+    return this.diagnoses.get(id);
   }
 
   // Browser-callable. Arguments are schema-checked by the frame guard (CALLABLES).

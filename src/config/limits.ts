@@ -33,6 +33,24 @@ export const LIMITS = {
     defaultLimit: 20,
     maxLimit: 50
   },
+  dns: {
+    timeoutMs: 3000,
+    // One retry on a network error or 5xx, after a random pause in this range.
+    retryJitterMinMs: 200,
+    retryJitterMaxMs: 500,
+    maxResponseBytes: 64 * 1024,
+    maxLookupsPerDiagnosis: 12,
+    cnameMaxHops: 3,
+    cacheMaxTtlSeconds: 60,
+    servfailCacheMaxSeconds: 10,
+    // Applied to attacker-controlled DNS text before it is stored or shown.
+    maxStringChars: 255,
+    maxRecordsPerName: 10
+  },
+  checks: {
+    // Manual DNS checks per visitor, counted in TenantAgent over a sliding hour.
+    perVisitorPerHour: 30
+  },
   http: {
     // Largest request body read on any route.
     maxBodyBytes: 16 * 1024

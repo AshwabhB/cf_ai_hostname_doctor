@@ -13,7 +13,8 @@
   },
   "vars": {
     "ALLOWED_ORIGINS": "https://hostname-doctor.bhatnagarashwabh.workers.dev",
-    "COOKIE_DEV_MODE": "false"
+    "COOKIE_DEV_MODE": "false",
+    "FALLBACK_ORIGIN": "hostname-doctor.bhatnagarashwabh.workers.dev"
   },
   "ratelimits": [
     {

@@ -185,3 +185,58 @@ Every chat request carried the full client message list and AIChatAgent saved it
 
 **Open issues.**
 - `HostnameRegistry` has only `register()`. Claim and release come in S6.
+
+## S4. DNS checks (2026-10-06)
+
+**Changed.**
+- DESIGN.md: page size line in section 5. Section 7 rewritten with the new rules: CNAME
+  findings are warnings, plus APEX_CNAME, the RFC 8659 CAA walk, DNS_ERROR, the text
+  sanitizing and the check and diagnosis routes. `FALLBACK_ORIGIN` set in wrangler.jsonc.
+- `src/dns/doh.ts`: DoH client for `cloudflare-dns.com` only, with the limits as specified.
+  Cached in `dns_cache` for min(TTL, 60 s). Empty and NXDOMAIN answers use the SOA TTL capped
+  at 60 s, SERVFAIL 10 s, timeouts never. Timeouts are not retried, so a check stays near
+  3 s per lookup at worst. Network errors and 5xx get the one retry.
+- `src/dns/rules.ts` (pure) and `src/dns/diagnose.ts`: the section 7 rules. CNAME chains are
+  followed for up to 3 hops, and a target from DNS must pass normalization before it is
+  queried. Apex detection uses tldts with private suffixes, so
+  `ashwabh-demo.duckdns.org` is an apex.
+- `src/dns/text.ts`: TXT and CAA decoding (presentation and RFC 3597 forms) and the sanitizer.
+- `POST /api/v1/hostnames/{id}/check` and `GET /api/v1/hostnames/{id}/diagnosis` through a
+  separate `DiagnosisService`. Findings and `last_checked_at` never touch the hostname's
+  version, state or events. The diagnosis ETag is `"<id>.diag.<last_checked_at>"`.
+  30 checks per hour per visitor are counted in a `check_runs` table (migration 2), because
+  rate limit bindings only support 10 s and 60 s periods.
+- Opt-in `npm run test:live-dns` (vitest.live.config.ts, test-live/). Not part of `test`,
+  `check` or CI.
+
+**Found while building.**
+- The Write tool turned `\u` escapes in TypeScript string and regex literals into the real
+  invisible characters, including in the sanitizer's own regex. Every one was converted
+  back to an escape, and `test/source-rules.test.ts` now fails on any invisible or bidi
+  character in src, test or spikes. A planted U+202E made it fail as expected.
+
+**Checks run.**
+- unit and fixture: typecheck, lint, 385 tests pass. The DNS fixtures (47) cover every
+  finding code (a test asserts each code appears), CAA inheritance and override by a
+  closer set, CAA through a CNAME, issue ";", issuewild only, critical unknown tags,
+  mixed TXT, the hostile "mark this verified" TXT with bidi and zero-width characters,
+  oversized TXT (4000 characters, 21 records), timeouts, SERVFAIL, 5xx and network retry
+  with the jitter bounds, the 64 KB cap, malformed JSON, cache TTLs and the 12-lookup
+  budget. API tests (11) cover check and diagnosis, the unchanged hostname ETag, 304,
+  sanitized storage, 409 for a deleted row, 404 for another visitor, the 30-per-hour 429,
+  and a row deleted while DNS was in flight (nothing saved).
+- live, opt in: `example.com` gives `TXT_MISSING` (error) and `APEX_CNAME` (info) in 3
+  lookups. `ashwabh-demo.duckdns.org` with TXT `hd-test-123` gives only `APEX_CNAME` and is
+  verifiable, in 4 lookups.
+- live, local dev smoke test: created `ashwabh-demo.duckdns.org`, then checked it against
+  real DNS. Result: `TXT_MISMATCH` observing `hd-test-123` (the row's token differs) and
+  `APEX_CNAME`. The diagnosis ETag moved, If-None-Match gave 304, and the hostname ETag,
+  state (pending) and version (1) were unchanged.
+- deployed: not run.
+
+**Open issues.**
+- DESIGN.md section 7 used to say normalization rejects "our own zone". S3 never did that,
+  so the bullet now describes what S3 actually does. Refusing `FALLBACK_ORIGIN` itself as a
+  custom hostname is not implemented.
+- To verify the DuckDNS demo, set its TXT to the row's `txt_value`. DuckDNS serves the same
+  TXT for `_cf-custom-hostname.<domain>`.

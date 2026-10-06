@@ -71,7 +71,8 @@ export type ServiceError =
   | { error: "invalid-transition" }
   | { error: "precondition-failed"; detail: "version" | "generation" }
   | { error: "idempotency-key-reuse" }
-  | { error: "invalid-cursor" };
+  | { error: "invalid-cursor" }
+  | { error: "rate-limited" };
 
 export type Result<T> = ({ ok: true } & T) | ({ ok: false } & ServiceError);
 
