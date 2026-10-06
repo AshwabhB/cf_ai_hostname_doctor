@@ -80,7 +80,8 @@ before state sync, RPC or the chat protocol. It runs in this order:
 | `cf_agent_tool_result`, `cf_agent_tool_approval` | 400. There are no client tools, and deletes use a `@callable` |
 | anything else, non-JSON | 400 |
 
-`hd_error` frames carry only `{ type, status, title }`, with a fixed title per check.
+`hd_error` frames carry only `{ type, status, title }`, with a fixed title per check, plus
+`retry_after` in seconds on the daily turn quota's 429.
 
 ## Responses
 
@@ -118,6 +119,10 @@ path to Workers AI, was never called.
   a URL host and would silently drop `/path`, `:port` or `user@`. Punycode labels must round
   trip, public suffixes (ICANN and private, through tldts) are refused, and IPs, wildcards
   and reserved names are refused.
+- Lookalikes: a label may not mix scripts (UTS #39 highly restrictive: one script, or Latin
+  with Han and Japanese, Chinese or Korean scripts), checked on the decoded form, so
+  `раypal.com` and its Punycode are refused with `mixed_script`. A whole-script lookalike is
+  legal, so the UI shows the `xn--` form under any non-ASCII name.
 - Every state change goes through `HostnameService.transition`, which checks the section 2
   table, the actor, the generation and the version inside one transaction, and writes the
   event with the row. Values read before an await are checked again at commit.

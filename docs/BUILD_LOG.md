@@ -615,3 +615,32 @@ short script that drops blank lines and lines starting with `//`, `/*` or `*`:
 - TXT-borne instructions are tested with a scripted model only.
 - The eval left background workflows polling for the eval hostnames in the local dev
   state. They stop when the server stops and are local data only.
+
+## S10. README (2026-10-06)
+
+**Changed.**
+- README.md replaces the starter's: the problem first, what the agent does, a screenshot,
+  the live URL marked pending, a five step demo, the assignment table, a Mermaid
+  architecture diagram, setup, check and deploy commands, a security summary linking each
+  point to SECURITY.md, engineering notes linking their evidence, guarantees and
+  limitations, and credit to agents-starter. LICENSE is unchanged.
+- PROMPTS.md: all 28 prompts in order, verbatim apart from removed paste markers and one
+  redacted DNS verification token, each with the action taken. The automatic message that
+  resumed the session after a context limit is left out.
+- SECURITY.md: the lookalike rule added under "Hostname data", and `retry_after` noted on
+  `hd_error` frames (both lagged S8 and S9).
+- `npm-agents-banner.svg` removed. Only the starter README used it.
+
+**Checks run.**
+- unit: `npm run check` (typecheck, lint, 471 tests in 19 files, build).
+- docs: all 46 relative links in README.md resolve, including anchors (script, GitHub slug
+  rules). The Mermaid block parses as `flowchart-v2` with mermaid 11 under Node, and a
+  malformed control input is rejected.
+- Commands checked against the repo: every npm script named exists in package.json, the
+  `.dev.vars` setup matches `.dev.vars.example`, and `wrangler secret put` reads stdin
+  when not interactive (wrangler 4.147 source), so the deploy command never shows the
+  secret.
+- deployed: not run. Deploy is S11.
+
+**Open issues.**
+- The live URL is a placeholder until S11. PROMPTS.md will be regenerated after deploy.
