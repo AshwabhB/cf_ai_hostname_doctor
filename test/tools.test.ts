@@ -277,6 +277,7 @@ describe("context budget", () => {
 
   it("caps STATE at 1.5k tokens by dropping hostnames and saying how many", () => {
     const summaries: HostnameSummary[] = Array.from({ length: 25 }, (_, i) => ({
+      id: `hn_${i.toString(16).padStart(24, "0")}`,
       hostname: `host-${i}-${"a".repeat(40)}.example.com`,
       display_hostname: `host-${i}.example.com`,
       state: "pending",

@@ -1,6 +1,11 @@
 import { SELF, env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LIMITS } from "../src/config/limits";
+import {
+  CONTENT_SECURITY_POLICY,
+  SECURITY_HEADERS,
+  headersFile
+} from "../src/config/security-headers";
 import { decodeSession, readCookie } from "../src/security/session";
 import wranglerConfig from "../wrangler.jsonc?raw";
 import {
@@ -264,5 +269,62 @@ describe("rate limit config", () => {
       limit: LIMITS.rateLimits.connectPerVisitor.limit,
       period: LIMITS.rateLimits.connectPerVisitor.periodSeconds
     });
+  });
+});
+
+describe("security headers", () => {
+  function expectSecurityHeaders(res: Response) {
+    expect(res.headers.get("content-security-policy")).toBe(
+      CONTENT_SECURITY_POLICY
+    );
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+  }
+
+  it("sets CSP, nosniff and no-referrer on JSON and problem responses", async () => {
+    expectSecurityHeaders(await session());
+    expectSecurityHeaders(await SELF.fetch(`${BASE}/nope`));
+    const v = await visitor();
+    expectSecurityHeaders(
+      await SELF.fetch(`${BASE}/agents/tenant-agent/me/get-messages`, {
+        headers: { cookie: v.cookie }
+      })
+    );
+  });
+
+  it("leaves the WebSocket upgrade response alone", async () => {
+    const v = await visitor();
+    const res = await upgrade({ cookie: v.cookie });
+    expect(res.status).toBe(101);
+    expect(res.headers.get("content-security-policy")).toBeNull();
+    res.webSocket?.accept();
+    res.webSocket?.close();
+  });
+
+  it("allows only same-origin scripts, styles and images, the app socket, and no framing", () => {
+    const directives = Object.fromEntries(
+      CONTENT_SECURITY_POLICY.split("; ").map((d) => {
+        const [name, ...values] = d.split(" ");
+        return [name, values];
+      })
+    );
+    expect(directives["default-src"]).toEqual(["'self'"]);
+    expect(directives["script-src"]).toEqual(["'self'"]);
+    expect(directives["style-src"]).toEqual(["'self'"]);
+    expect(directives["img-src"]).toEqual(["'self'"]);
+    expect(directives["connect-src"]).toEqual([
+      "'self'",
+      "wss://hostname-doctor.bhatnagarashwabh.workers.dev"
+    ]);
+    expect(directives["frame-ancestors"]).toEqual(["'none'"]);
+    expect(CONTENT_SECURITY_POLICY).not.toMatch(/unsafe-(eval|inline)/);
+  });
+
+  it("writes the same headers into the static assets' _headers file", () => {
+    const lines = headersFile().split("\n");
+    expect(lines[0]).toBe("/*");
+    for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+      expect(lines).toContain(`  ${name}: ${value}`);
+    }
   });
 });

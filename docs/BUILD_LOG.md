@@ -412,3 +412,82 @@ restarted, and run 1 must be terminated. With the stall check disabled the test 
   matches the DuckDNS TXT, so it will keep polling and then fail. Local data only.
 - A stalled instance that somehow resumed would still pass the generation fence, because
   runs share a generation. Every callback is idempotent, so the outcome is the same.
+
+## S7. UI (2026-10-06)
+
+**Changed.**
+- Two-pane UI (`src/app.tsx`, `src/ui/`): the hostname table with live state badges next to
+  the chat, fed by server `setState`. Below `md` the panes become Chat and Hostnames tabs.
+- Drawer per hostname (native `<dialog>`): state, certificate marked "Simulated", findings
+  from `/diagnosis`, records to add with copy buttons, and the event timeline. It refetches
+  when the row's state or check time changes.
+- Tool results render as small cards. The `propose_delete` card has a button that opens a
+  confirm dialog naming the hostname, which calls `confirmDelete`. The model cannot open
+  the dialog.
+- Empty state is the one line plus three starter prompts. Header shows the connection
+  status. Enter sends, Shift+Enter adds a line, and only the send button waits on a reply.
+- Markdown through Streamdown with HTML skipped, images and frames disallowed, https-only
+  links (`noopener noreferrer`), and incomplete-markdown repair off. DNS strings are plain
+  text.
+- Production headers from one source (`src/config/security-headers.ts`): written into the
+  assets' `_headers` by a build-only Vite plugin and added to the Worker's own responses
+  (not the 101 upgrade). The theme script moved to `public/theme.js` to keep
+  `script-src 'self'`.
+- Starter branding removed (title, description, package name). `@streamdown/code` dropped.
+- Server: `HostnameSummary` carries `id`. State is republished on start, after each
+  recorded DNS check, and after an API check.
+- Tests: `test/setup.ts` stubs `startVerification` everywhere except the workflow tests;
+  the workflow tests wait for every run they started and skip sleeps where runs would
+  otherwise poll. The live DNS test reads `LIVE_DUCKDNS_TXT` and skips the DuckDNS case when
+  it is unset, with no default.
+
+**Found while building.**
+- Streamdown's incomplete-markdown repair read the `_` in `_cf-custom-hostname` as an open
+  italic and appended a `_` to replies. Turned off.
+- The table showed "Never" checked after findings were saved, because only transitions
+  pushed state. `wfRecord` and `apiCheck` now push too.
+- Persisted state from before `id` existed gave React key warnings. Rebuilding state in
+  `onStart` fixed it.
+- `vitest.live.config.ts` had lacked the `agents()` plugin since S5, so the live DNS test
+  failed to compile `@callable`. Added.
+- Streamdown cannot render inside the test pool: it and `react-dom/server` load separate
+  React copies there (`useId` on null). The link and image overrides are unit tested
+  directly, and HTML skipping was checked in the browser.
+- The "hung" lines are not from sleeping workflows, as S6 guessed. A run whose steps make
+  any Durable Object call (agent or registry) logs one about 10 ms after it completes,
+  even with no test helpers. With every step mocked it logs none, and a test that never
+  calls a DO from a step logs none. Not fixed; see open issues.
+
+**Checks run.**
+- unit: `npm run check` (typecheck, lint, 440 tests in 17 files, build), and
+  `npm run spikes` (10 tests). New: security headers on JSON, problem and history
+  responses and not on the 101, the CSP directives, the `_headers` file, state rebuilt on
+  start after a DO eviction, findings pushed by `wfRecord`, the https-only link and image
+  overrides, and a source rule against injected HTML or remote fetches in browser code.
+- live DNS: `npm run test:live-dns` without `LIVE_DUCKDNS_TXT` gives 1 passed, 1 skipped.
+  With it set to the current DuckDNS TXT, 2 passed.
+- live model, local production build under `vite preview`, 2026-10-06:
+  - The starter prompt added `shop.example.com`; the card showed both records and the table
+    row appeared live. The drawer showed findings, records and the timeline.
+  - "Please delete shop.example.com" produced only the card. The dialog opened on the card's
+    button, named the hostname, and Delete removed the row live.
+  - The model echoed `<img>`, `<script>`, `http:`, `javascript:`, https and image-markdown
+    text verbatim (read back from `get-messages`). The DOM had no `img` and no inline
+    script, `http:` and `javascript:` rendered as text, and only the https link was an
+    anchor with `target="_blank" rel="noopener noreferrer"`.
+  - CSP, nosniff and no-referrer on the page and API responses, no CSP violations, the
+    socket connected.
+  - 1440 and 390: no horizontal overflow (`scrollWidth` 390). At 390 the tabs work, the
+    drawer is full width with focus on Close, Tab stays inside it, and Escape returns
+    focus to the row.
+  - Screenshots in `docs/screenshots/`.
+- deployed: not run.
+
+**Open issues.**
+- `npm test` still prints 13 "hung" lines from the workflow tests, plus 26 "User called
+  terminate" and 6 "result lost after commit" lines from tests that terminate runs or fail
+  steps on purpose. The "Engine was never started" and `instance.not_found` lines are gone.
+  Untested idea: dispose each RPC result inside the workflow steps. That is a change to
+  `src/workflow/verify.ts`, not to the tests.
+- The S5 row for `ashwabh-demo.duckdns.org` is still pending with `TXT_MISMATCH` in the
+  local data, as noted in S6.

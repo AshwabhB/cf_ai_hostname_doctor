@@ -11,6 +11,7 @@ export function estimateTokens(text: string): number {
 }
 
 export type HostnameSummary = {
+  id: string;
   hostname: string;
   display_hostname: string;
   state: HostnameState;
@@ -20,6 +21,7 @@ export type HostnameSummary = {
 };
 
 type SummaryRow = {
+  id: string;
   hostname: string;
   state: HostnameState;
   verify_token: string;
@@ -34,7 +36,7 @@ export function readSummaries(
 ): HostnameSummary[] {
   return sql
     .exec<SummaryRow>(
-      `SELECT hostname, state, verify_token, findings_json, last_checked_at FROM hostnames
+      `SELECT id, hostname, state, verify_token, findings_json, last_checked_at FROM hostnames
        WHERE state <> 'deleted' ORDER BY created_at DESC, id DESC`
     )
     .toArray()
@@ -45,6 +47,7 @@ export function readSummaries(
             .findings
         : [];
       return {
+        id: row.id,
         hostname: row.hostname,
         display_hostname: display.ok ? display.unicode : row.hostname,
         state: row.state,

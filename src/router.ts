@@ -3,6 +3,7 @@
 import { routeAgentRequest } from "agents";
 import { HOSTNAMES_PATH, handleHostnames } from "./api/hostnames";
 import { LIMITS } from "./config/limits";
+import { SECURITY_HEADERS } from "./config/security-headers";
 import { AGENT_ALIAS, SESSION_PATH } from "./config/protocol";
 import {
   NO_STORE,
@@ -27,7 +28,20 @@ export const SESSION_EXP_PARAM = "__hd_exp";
 
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 
-export async function handleRequest(
+// Every Worker response carries the security headers. A 101 WebSocket upgrade is
+// passed through untouched.
+function withSecurityHeaders(res: Response): Response {
+  if (res.status === 101 || res.webSocket) return res;
+  const headers = new Headers(res.headers);
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) headers.set(name, value);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+export async function handleRequest(request: Request, env: Env): Promise<Response> {
+  return withSecurityHeaders(await route(request, env));
+}
+
+async function route(
   request: Request,
   env: Env
 ): Promise<Response> {

@@ -145,6 +145,9 @@ export class TenantAgent extends AIChatAgent<Env, TenantState> {
   async onStart(props?: object) {
     await super.onStart(props);
     this.ensureSchema();
+    // The last pushed state is persisted. Rebuild it on start so clients never get a
+    // copy shaped by older code or missing rows changed while the agent slept.
+    this.publishState();
     // Reconcile on start, in the background so the first request is not held up.
     this.ctx.waitUntil(this.reconcile());
   }
@@ -260,7 +263,10 @@ export class TenantAgent extends AIChatAgent<Env, TenantState> {
     generation: number,
     diagnosis: Diagnosis & { checkedAt: number }
   ) {
-    return this.hostnameLifecycle.record(hostnameId, generation, diagnosis);
+    const result = this.hostnameLifecycle.record(hostnameId, generation, diagnosis);
+    // New findings change the table's "checked" time and codes, so push them too.
+    this.publishState();
+    return result;
   }
 
   wfGiveUp(hostnameId: string, generation: number) {
@@ -318,8 +324,10 @@ export class TenantAgent extends AIChatAgent<Env, TenantState> {
     return this.hostnames.retry(id, "user");
   }
 
-  apiCheck(id: string) {
-    return this.diagnoses.check(id);
+  async apiCheck(id: string) {
+    const result = await this.diagnoses.check(id);
+    if (result.ok) this.publishState();
+    return result;
   }
 
   apiDiagnosis(id: string) {

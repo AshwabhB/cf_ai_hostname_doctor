@@ -1,527 +1,403 @@
-import { Suspense, useCallback, useState, useEffect, useRef } from "react";
-import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
-import { getToolName, isToolUIPart, type UIMessage } from "ai";
-import type { TenantAgent } from "./server";
+import { Badge, Button, InputArea, Tabs } from "@cloudflare/kumo";
+import { Toasty } from "@cloudflare/kumo/components/toast";
+import {
+  CircleIcon,
+  MoonIcon,
+  PaperPlaneRightIcon,
+  StopIcon,
+  SunIcon,
+  TrashIcon
+} from "@phosphor-icons/react";
+import { isToolUIPart, type UIMessage } from "ai";
+import { useAgent } from "agents/react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   AGENT_ALIAS,
   SESSION_EXPIRED_CLOSE,
   SESSION_PATH
 } from "./config/protocol";
-import {
-  Badge,
-  Button,
-  Empty,
-  InputArea,
-  PoweredByCloudflare,
-  Surface,
-  Switch,
-  Text
-} from "@cloudflare/kumo";
-import { Toasty } from "@cloudflare/kumo/components/toast";
-import { Streamdown } from "streamdown";
-import { code } from "@streamdown/code";
-import {
-  PaperPlaneRightIcon,
-  StopIcon,
-  TrashIcon,
-  GearIcon,
-  ChatCircleDotsIcon,
-  CircleIcon,
-  MoonIcon,
-  SunIcon,
-  CheckCircleIcon,
-  XCircleIcon,
-  BrainIcon,
-  CaretDownIcon,
-  BugIcon
-} from "@phosphor-icons/react";
+import type { TenantAgent, TenantState } from "./server";
+import { ConfirmDelete, type DeleteTarget } from "./ui/ConfirmDelete";
+import { HostnameDrawer } from "./ui/HostnameDrawer";
+import { HostnameTable, type HostnameRow } from "./ui/HostnameTable";
+import { Markdown } from "./ui/Markdown";
+import { ToolCard } from "./ui/ToolCard";
 
-// ── Small components ──────────────────────────────────────────────────
+const STARTER_PROMPTS = [
+  "Add shop.example.com as a custom hostname",
+  "What DNS records do I need to add?",
+  "Why is my hostname not verified yet?"
+];
+
+const DELETE_ERRORS: Record<string, string> = {
+  "precondition-failed":
+    "This hostname changed since the assistant offered to delete it. Ask again.",
+  "not-found": "This hostname no longer exists.",
+  "invalid-transition": "This hostname cannot be deleted in its current state."
+};
 
 function ThemeToggle() {
   const [dark, setDark] = useState(
     () => document.documentElement.getAttribute("data-mode") === "dark"
   );
-
   const toggle = useCallback(() => {
-    const next = !dark;
-    setDark(next);
-    const mode = next ? "dark" : "light";
+    const mode = dark ? "light" : "dark";
+    setDark(!dark);
     document.documentElement.setAttribute("data-mode", mode);
     document.documentElement.style.colorScheme = mode;
-    localStorage.setItem("theme", mode);
+    try {
+      localStorage.setItem("theme", mode);
+    } catch {
+      // Storage may be unavailable. The choice still applies to this page.
+    }
   }, [dark]);
-
   return (
     <Button
       variant="secondary"
       shape="square"
       icon={dark ? <SunIcon size={16} /> : <MoonIcon size={16} />}
       onClick={toggle}
-      aria-label="Toggle theme"
+      aria-label={dark ? "Switch to light theme" : "Switch to dark theme"}
     />
   );
 }
 
-// ── Tool rendering ────────────────────────────────────────────────────
+type Connection = "connecting" | "connected" | "reconnecting";
 
-function ToolIO({ label, value }: { label: string; value: unknown }) {
-  if (value === undefined || value === null) return null;
-  const text =
-    typeof value === "string" ? value : JSON.stringify(value, null, 2);
-  if (!text) return null;
+function ConnectionStatus({ state }: { state: Connection }) {
+  const label =
+    state === "connected"
+      ? "Connected"
+      : state === "connecting"
+        ? "Connecting..."
+        : "Reconnecting...";
   return (
-    <div className="mt-1">
-      <Text size="xs" variant="secondary" bold>
+    <output className="flex items-center gap-1.5" aria-live="polite">
+      <CircleIcon
+        size={8}
+        weight="fill"
+        className={
+          state === "connected" ? "text-kumo-success" : "text-kumo-warning"
+        }
+      />
+      {/* On phones a healthy connection shows only the dot, so the title has room.
+          Connecting and reconnecting always show their text. */}
+      <span
+        className={`text-xs text-kumo-subtle ${state === "connected" ? "sr-only sm:not-sr-only" : ""}`}
+      >
         {label}
-      </Text>
-      <pre className="mt-0.5 font-mono text-xs text-kumo-subtle whitespace-pre-wrap overflow-auto max-h-64">
-        {text}
-      </pre>
+      </span>
+    </output>
+  );
+}
+
+function Message({
+  message,
+  animating,
+  onDelete
+}: {
+  message: UIMessage;
+  animating: boolean;
+  onDelete: (t: DeleteTarget) => void;
+}) {
+  const isUser = message.role === "user";
+  return (
+    <div className="space-y-2">
+      {message.parts.map((part, i) => {
+        const key = `${message.id}-${i}`;
+        if (isToolUIPart(part))
+          return <ToolCard key={key} part={part} onDelete={onDelete} />;
+        if (part.type !== "text" || !part.text) return null;
+        return isUser ? (
+          <div key={key} className="flex justify-end">
+            <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md bg-kumo-contrast text-kumo-inverse leading-relaxed whitespace-pre-wrap break-words">
+              {part.text}
+            </div>
+          </div>
+        ) : (
+          <div key={key} className="flex justify-start">
+            <div className="max-w-[85%] min-w-0 rounded-2xl rounded-bl-md bg-kumo-base text-kumo-default leading-relaxed">
+              <Markdown text={part.text} animating={animating} />
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function ToolPartView({
-  part,
-  addToolApprovalResponse
+function ChatPane({
+  messages,
+  status,
+  connected,
+  onSend,
+  onStop,
+  onDelete
 }: {
-  part: UIMessage["parts"][number];
-  addToolApprovalResponse: (response: {
-    id: string;
-    approved: boolean;
-  }) => void;
+  messages: UIMessage[];
+  status: string;
+  connected: boolean;
+  onSend: (text: string) => void;
+  onStop: () => void;
+  onDelete: (t: DeleteTarget) => void;
 }) {
-  if (!isToolUIPart(part)) return null;
-  const toolName = getToolName(part);
+  const [input, setInput] = useState("");
+  const end = useRef<HTMLDivElement>(null);
+  const textarea = useRef<HTMLTextAreaElement>(null);
+  const streaming = status === "streaming" || status === "submitted";
 
-  // Completed
-  if (part.state === "output-available") {
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
-          <div className="flex items-center gap-2 mb-1">
-            <GearIcon size={14} className="text-kumo-inactive" />
-            <Text size="xs" variant="secondary" bold>
-              {toolName}
-            </Text>
-            <Badge variant="secondary">Done</Badge>
-          </div>
-          <ToolIO label="Input" value={part.input} />
-          <ToolIO label="Output" value={part.output} />
-        </Surface>
+  useEffect(() => {
+    end.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages]);
+
+  const send = (text: string) => {
+    const trimmed = text.trim();
+    // Only sending is blocked while a reply streams. Typing stays available.
+    if (!trimmed || streaming || !connected) return;
+    onSend(trimmed);
+    setInput("");
+    if (textarea.current) textarea.current.style.height = "auto";
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className="mx-auto max-w-3xl space-y-5 px-4 py-6">
+          {messages.length === 0 && (
+            <div className="py-10 text-center space-y-4">
+              <p className="text-kumo-default">
+                Add a customer hostname and I'll verify it and explain what's
+                blocking it.
+              </p>
+              <div className="flex flex-wrap justify-center gap-2">
+                {STARTER_PROMPTS.map((prompt) => (
+                  <Button
+                    key={prompt}
+                    variant="outline"
+                    size="sm"
+                    disabled={streaming || !connected}
+                    onClick={() => send(prompt)}
+                  >
+                    {prompt}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
+          {messages.map((message, index) => (
+            <Message
+              key={message.id}
+              message={message}
+              animating={
+                streaming &&
+                message.role === "assistant" &&
+                index === messages.length - 1
+              }
+              onDelete={onDelete}
+            />
+          ))}
+          <div ref={end} />
+        </div>
       </div>
-    );
-  }
-
-  // Needs approval
-  if ("approval" in part && part.state === "approval-requested") {
-    const approvalId = (part.approval as { id?: string })?.id;
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-3 rounded-xl ring-2 ring-kumo-warning">
-          <div className="flex items-center gap-2 mb-2">
-            <GearIcon size={14} className="text-kumo-warning" />
-            <Text size="sm" bold>
-              Approval needed: {toolName}
-            </Text>
-          </div>
-          <div className="font-mono mb-3">
-            <Text size="xs" variant="secondary">
-              {JSON.stringify(part.input, null, 2)}
-            </Text>
-          </div>
-          <div className="flex gap-2">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          send(input);
+        }}
+        className="border-t border-kumo-line bg-kumo-base px-4 py-3"
+      >
+        <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-xl border border-kumo-line bg-kumo-base p-2 focus-within:ring-2 focus-within:ring-kumo-ring">
+          <label htmlFor="chat-input" className="sr-only">
+            Message
+          </label>
+          <InputArea
+            id="chat-input"
+            ref={textarea}
+            value={input}
+            onValueChange={setInput}
+            onKeyDown={(e) => {
+              // Enter sends. Shift+Enter adds a new line. Composing (IME) input is left alone.
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing
+              ) {
+                e.preventDefault();
+                send(input);
+              }
+            }}
+            onInput={(e) => {
+              const el = e.currentTarget;
+              el.style.height = "auto";
+              el.style.height = `${el.scrollHeight}px`;
+            }}
+            placeholder="Ask about a hostname..."
+            rows={1}
+            className="flex-1 min-w-0 resize-none max-h-40 bg-transparent! shadow-none! ring-0! focus:ring-0! outline-none!"
+          />
+          {streaming ? (
             <Button
-              variant="primary"
-              size="sm"
-              icon={<CheckCircleIcon size={14} />}
-              onClick={() => {
-                if (approvalId) {
-                  addToolApprovalResponse({ id: approvalId, approved: true });
-                }
-              }}
-            >
-              Approve
-            </Button>
-            <Button
+              type="button"
               variant="secondary"
-              size="sm"
-              icon={<XCircleIcon size={14} />}
-              onClick={() => {
-                if (approvalId) {
-                  addToolApprovalResponse({ id: approvalId, approved: false });
-                }
-              }}
-            >
-              Reject
-            </Button>
-          </div>
-        </Surface>
-      </div>
-    );
-  }
-
-  // Rejected / denied
-  if (
-    part.state === "output-denied" ||
-    ("approval" in part &&
-      (part.approval as { approved?: boolean })?.approved === false)
-  ) {
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
-          <div className="flex items-center gap-2">
-            <XCircleIcon size={14} className="text-kumo-danger" />
-            <Text size="xs" variant="secondary" bold>
-              {toolName}
-            </Text>
-            <Badge variant="secondary">Rejected</Badge>
-          </div>
-        </Surface>
-      </div>
-    );
-  }
-
-  // Errored
-  if (part.state === "output-error") {
-    const errorText = part.errorText;
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring-2 ring-kumo-danger">
-          <div className="flex items-center gap-2 mb-1">
-            <XCircleIcon size={14} className="text-kumo-danger" />
-            <Text size="xs" variant="secondary" bold>
-              {toolName}
-            </Text>
-            <Badge variant="destructive">Error</Badge>
-          </div>
-          <div className="font-mono">
-            <Text size="xs" variant="secondary">
-              {errorText || "Tool call failed"}
-            </Text>
-          </div>
-        </Surface>
-      </div>
-    );
-  }
-
-  // Executing
-  if (part.state === "input-available" || part.state === "input-streaming") {
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
-          <div className="flex items-center gap-2">
-            <GearIcon size={14} className="text-kumo-inactive animate-spin" />
-            <Text size="xs" variant="secondary">
-              Running {toolName}...
-            </Text>
-          </div>
-          <ToolIO label="Input" value={part.input} />
-        </Surface>
-      </div>
-    );
-  }
-
-  return null;
+              shape="square"
+              aria-label="Stop reply"
+              icon={<StopIcon size={18} />}
+              onClick={onStop}
+            />
+          ) : (
+            <Button
+              type="submit"
+              variant="primary"
+              shape="square"
+              aria-label="Send message"
+              disabled={!input.trim() || !connected}
+              icon={<PaperPlaneRightIcon size={18} />}
+            />
+          )}
+        </div>
+        <p className="mx-auto mt-1 max-w-3xl text-xs text-kumo-subtle">
+          Enter to send, Shift+Enter for a new line.
+        </p>
+      </form>
+    </div>
+  );
 }
 
-// ── Main chat ─────────────────────────────────────────────────────────
+function Workspace() {
+  const [connection, setConnection] = useState<Connection>("connecting");
+  const [hostnames, setHostnames] = useState<HostnameRow[]>([]);
+  const [tab, setTab] = useState("chat");
+  const [open, setOpen] = useState<HostnameRow | null>(null);
+  const [deleting, setDeleting] = useState<DeleteTarget | null>(null);
 
-function Chat() {
-  const [connected, setConnected] = useState(false);
-  const [input, setInput] = useState("");
-  const [showDebug, setShowDebug] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  const agent = useAgent<TenantAgent>({
+  const agent = useAgent<TenantAgent, TenantState>({
     agent: "TenantAgent",
     // The server maps this alias to the visitor's own agent from the session cookie.
     name: AGENT_ALIAS,
-    onOpen: useCallback(() => setConnected(true), []),
+    onOpen: useCallback(() => setConnection("connected"), []),
     onClose: useCallback((event: CloseEvent) => {
-      setConnected(false);
-      // An expired session closes the socket. Renew the cookie so the automatic
-      // reconnect succeeds.
+      setConnection((c) =>
+        c === "connecting" ? "connecting" : "reconnecting"
+      );
+      // An expired session closes the socket. Renew the cookie so the reconnect works.
       if (event.code === SESSION_EXPIRED_CLOSE) void refreshSession();
     }, []),
-    onError: useCallback(
-      (error: Event) => console.error("WebSocket error:", error),
-      []
-    )
+    // The server pushes the hostname summary after every change.
+    onStateUpdate: useCallback((state: TenantState) => {
+      setHostnames(state.hostnames as unknown as HostnameRow[]);
+    }, [])
   });
 
-  const {
-    messages,
-    sendMessage,
-    clearHistory,
-    addToolApprovalResponse,
-    stop,
-    status
-  } = useAgentChat({
+  const { messages, sendMessage, clearHistory, stop, status } = useAgentChat({
     agent,
     experimental_throttle: 100,
-    // History lives on the server. The client sends only the new message and never
-    // pushes its own copy of the conversation.
+    // History lives on the server. The client sends only the new message.
     syncMessagesToServer: false,
     prepareSendMessagesRequest: ({ messages }) => ({
       body: { messages: messages.slice(-1) }
     })
   });
 
-  const isStreaming = status === "streaming" || status === "submitted";
+  // Keep the open drawer in step with live state changes.
+  const openRow = open
+    ? (hostnames.find((h) => h.id === open.id) ?? open)
+    : null;
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  // Re-focus the input after streaming ends
-  useEffect(() => {
-    if (!isStreaming && textareaRef.current) {
-      textareaRef.current.focus();
+  const confirmDelete = async (
+    target: DeleteTarget
+  ): Promise<string | null> => {
+    try {
+      const result = (await agent.stub.confirmDelete(
+        target.id,
+        target.etag
+      )) as {
+        ok: boolean;
+        error?: string;
+      };
+      if (result.ok) {
+        if (open?.id === target.id) setOpen(null);
+        return null;
+      }
+      return (
+        DELETE_ERRORS[result.error ?? ""] ??
+        "The delete did not go through. Try again."
+      );
+    } catch {
+      return "The delete did not go through. Check your connection and try again.";
     }
-  }, [isStreaming]);
+  };
 
-  const send = useCallback(async () => {
-    const text = input.trim();
-    if (!text || isStreaming) return;
-    setInput("");
-    sendMessage({ role: "user", parts: [{ type: "text", text }] });
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [input, isStreaming, sendMessage]);
+  const chat = (
+    <ChatPane
+      messages={messages}
+      status={status}
+      connected={connection === "connected"}
+      onSend={(text) =>
+        sendMessage({ role: "user", parts: [{ type: "text", text }] })
+      }
+      onStop={stop}
+      onDelete={setDeleting}
+    />
+  );
+  const table = <HostnameTable rows={hostnames} onOpen={setOpen} />;
 
   return (
-    <div className="flex flex-col h-screen bg-kumo-elevated relative">
-      {/* Header */}
-      <header className="px-5 py-4 bg-kumo-base border-b border-kumo-line">
-        <div className="max-w-3xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <h1 className="text-lg font-semibold text-kumo-default">
-              <span className="mr-2">⛅</span>Agent Starter
-            </h1>
-            <Badge variant="secondary">
-              <ChatCircleDotsIcon size={12} weight="bold" className="mr-1" />
-              AI Chat
-            </Badge>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <CircleIcon
-                size={8}
-                weight="fill"
-                className={connected ? "text-kumo-success" : "text-kumo-danger"}
-              />
-              <Text size="xs" variant="secondary">
-                {connected ? "Connected" : "Disconnected"}
-              </Text>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <BugIcon size={14} className="text-kumo-inactive" />
-              <Switch
-                checked={showDebug}
-                onCheckedChange={setShowDebug}
-                size="sm"
-                aria-label="Toggle debug mode"
-              />
-            </div>
-            <ThemeToggle />
-            <Button
-              variant="secondary"
-              icon={<TrashIcon size={16} />}
-              onClick={clearHistory}
-            >
-              Clear
-            </Button>
-          </div>
+    <div className="flex h-dvh flex-col bg-kumo-elevated">
+      <header className="flex items-center justify-between gap-3 border-b border-kumo-line bg-kumo-base px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <h1 className="truncate text-base font-semibold text-kumo-default">
+            Hostname Doctor
+          </h1>
+          <Badge variant="beta">Demo</Badge>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <ConnectionStatus state={connection} />
+          <ThemeToggle />
+          <Button
+            variant="secondary"
+            icon={<TrashIcon size={16} />}
+            onClick={clearHistory}
+            aria-label="Clear chat"
+          >
+            <span className="hidden sm:inline">Clear chat</span>
+          </Button>
         </div>
       </header>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-5 py-6 space-y-5">
-          {messages.length === 0 && (
-            <Empty
-              icon={<ChatCircleDotsIcon size={32} />}
-              title="Start a conversation"
-            />
-          )}
-
-          {messages.map((message: UIMessage, index: number) => {
-            const isUser = message.role === "user";
-            const isLastAssistant =
-              message.role === "assistant" && index === messages.length - 1;
-
-            return (
-              <div key={message.id} className="space-y-2">
-                {showDebug && (
-                  <pre className="text-[11px] text-kumo-subtle bg-kumo-control rounded-lg p-3 overflow-auto max-h-64">
-                    {JSON.stringify(message, null, 2)}
-                  </pre>
-                )}
-
-                {/* Render parts in chronological (array) order */}
-                {message.parts.map((part, i) => {
-                  const key = `${message.id}-${i}`;
-
-                  if (isToolUIPart(part)) {
-                    return (
-                      <ToolPartView
-                        key={key}
-                        part={part}
-                        addToolApprovalResponse={addToolApprovalResponse}
-                      />
-                    );
-                  }
-
-                  if (part.type === "reasoning") {
-                    if (!part.text.trim()) return null;
-                    const isDone = part.state === "done" || !isStreaming;
-                    return (
-                      <div key={key} className="flex justify-start">
-                        <details className="max-w-[85%] w-full" open={!isDone}>
-                          <summary className="flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-sm select-none">
-                            <BrainIcon size={14} className="text-purple-400" />
-                            <span className="font-medium text-kumo-default">
-                              Reasoning
-                            </span>
-                            {isDone ? (
-                              <span className="text-xs text-kumo-success">
-                                Complete
-                              </span>
-                            ) : (
-                              <span className="text-xs text-kumo-brand">
-                                Thinking...
-                              </span>
-                            )}
-                            <CaretDownIcon
-                              size={14}
-                              className="ml-auto text-kumo-inactive"
-                            />
-                          </summary>
-                          <pre className="mt-2 px-3 py-2 rounded-lg bg-kumo-control text-xs text-kumo-default whitespace-pre-wrap overflow-auto max-h-64">
-                            {part.text}
-                          </pre>
-                        </details>
-                      </div>
-                    );
-                  }
-
-                  if (
-                    part.type === "file" &&
-                    part.mediaType.startsWith("image/")
-                  ) {
-                    return (
-                      <div
-                        key={key}
-                        className={`flex ${isUser ? "justify-end" : "justify-start"}`}
-                      >
-                        <img
-                          src={part.url}
-                          alt="Attachment"
-                          className="max-h-64 rounded-xl border border-kumo-line object-contain"
-                        />
-                      </div>
-                    );
-                  }
-
-                  if (part.type === "text") {
-                    if (!part.text) return null;
-
-                    if (isUser) {
-                      return (
-                        <div key={key} className="flex justify-end">
-                          <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md bg-kumo-contrast text-kumo-inverse leading-relaxed">
-                            {part.text}
-                          </div>
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <div key={key} className="flex justify-start">
-                        <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-kumo-base text-kumo-default leading-relaxed">
-                          <Streamdown
-                            className="sd-theme rounded-2xl rounded-bl-md p-3"
-                            plugins={{ code }}
-                            controls={false}
-                            isAnimating={isLastAssistant && isStreaming}
-                          >
-                            {part.text}
-                          </Streamdown>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  return null;
-                })}
-              </div>
-            );
-          })}
-
-          <div ref={messagesEndRef} />
-        </div>
+      {/* Phones: one pane at a time behind tabs. Wide screens: chat and table side by side. */}
+      <div className="border-b border-kumo-line bg-kumo-base px-4 py-2 md:hidden">
+        <Tabs
+          value={tab}
+          onValueChange={setTab}
+          tabs={[
+            { value: "chat", label: "Chat" },
+            { value: "hostnames", label: `Hostnames (${hostnames.length})` }
+          ]}
+        />
       </div>
-
-      {/* Input */}
-      <div className="border-t border-kumo-line bg-kumo-base">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            send();
-          }}
-          className="max-w-3xl mx-auto px-5 py-4"
+      <main className="flex min-h-0 flex-1">
+        <section
+          aria-label="Chat"
+          className={`min-h-0 min-w-0 flex-1 ${tab === "chat" ? "flex" : "hidden"} md:flex flex-col`}
         >
-          <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm focus-within:ring-2 focus-within:ring-kumo-ring focus-within:border-transparent transition-shadow">
-            <InputArea
-              ref={textareaRef}
-              value={input}
-              onValueChange={setInput}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              onInput={(e) => {
-                const el = e.currentTarget;
-                el.style.height = "auto";
-                el.style.height = `${el.scrollHeight}px`;
-              }}
-              placeholder="Send a message..."
-              disabled={!connected || isStreaming}
-              rows={1}
-              className="flex-1 ring-0! focus:ring-0! shadow-none! bg-transparent! outline-none! resize-none max-h-40"
-            />
-            {isStreaming ? (
-              <Button
-                type="button"
-                variant="secondary"
-                shape="square"
-                aria-label="Stop generation"
-                icon={<StopIcon size={18} />}
-                onClick={stop}
-                className="mb-0.5"
-              />
-            ) : (
-              <Button
-                type="submit"
-                variant="primary"
-                shape="square"
-                aria-label="Send message"
-                disabled={!input.trim() || !connected}
-                icon={<PaperPlaneRightIcon size={18} />}
-                className="mb-0.5"
-              />
-            )}
-          </div>
-        </form>
-        <div className="flex justify-center pb-3">
-          <PoweredByCloudflare href="https://developers.cloudflare.com/agents/" />
-        </div>
-      </div>
+          {chat}
+        </section>
+        <aside
+          aria-label="Hostnames"
+          className={`min-h-0 w-full overflow-y-auto border-kumo-line bg-kumo-base md:w-[24rem] md:border-l lg:w-[28rem] ${tab === "hostnames" ? "block" : "hidden"} md:block`}
+        >
+          <h2 className="px-4 pt-4 pb-2 text-sm font-semibold">Hostnames</h2>
+          {table}
+        </aside>
+      </main>
+
+      <HostnameDrawer row={openRow} onClose={() => setOpen(null)} />
+      <ConfirmDelete
+        target={deleting}
+        onClose={() => setDeleting(null)}
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }
@@ -558,20 +434,19 @@ function useSession(): "loading" | "ready" | "failed" {
 export default function App() {
   const session = useSession();
   const fallback = (text: string) => (
-    <div className="flex items-center justify-center h-screen text-kumo-inactive">
+    <div className="flex h-dvh items-center justify-center text-kumo-inactive">
       {text}
     </div>
   );
   if (session === "loading") return fallback("Loading...");
-  if (session === "failed") {
+  if (session === "failed")
     return fallback(
       "Could not start a session. Refresh the page to try again."
     );
-  }
   return (
     <Toasty>
       <Suspense fallback={fallback("Loading...")}>
-        <Chat />
+        <Workspace />
       </Suspense>
     </Toasty>
   );

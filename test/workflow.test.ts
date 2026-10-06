@@ -1,3 +1,7 @@
+// These tests run the real verification workflow. test/setup.ts stubs it everywhere else.
+(globalThis as { __HD_REAL_WORKFLOWS__?: boolean }).__HD_REAL_WORKFLOWS__ =
+  true;
+
 // VerifyWorkflow, the registry and reconcile, run on the real Workflows binding in the
 // pool. Sleeps are skipped with the workflow test helpers. DNS comes from the fixture
 // resolver, so nothing reaches the network.
@@ -9,6 +13,7 @@ import {
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LIMITS } from "../src/config/limits";
+import { HostnameLifecycle } from "../src/hostnames/lifecycle";
 import { HostnameService } from "../src/hostnames/service";
 import { HostnameRegistry, TenantAgent } from "../src/server";
 import { worstCaseSteps, sleepAfter } from "../src/workflow/schedule";
@@ -19,16 +24,30 @@ import { refusedFetches } from "./setup";
 // TXT values served per verification name. Tests add tokens as they learn them.
 let txtByName = new Map<string, string[]>();
 
+let fetchSpy: { mockRestore(): void } | null = null;
+
 beforeEach(() => {
+  started = [];
+  const startVerification = HostnameLifecycle.prototype.startVerification;
+  vi.spyOn(HostnameLifecycle.prototype, "startVerification").mockImplementation(
+    async function (this: HostnameLifecycle, hostnameId: string) {
+      const id = await startVerification.call(this, hostnameId);
+      if (id) started.push(id);
+      return id;
+    }
+  );
   txtByName = new Map();
-  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+  fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
     const zone: Zone = {};
     for (const [name, values] of txtByName)
       zone[`TXT ${name}`] = txt(name, ...values);
     return fakeResolver(zone).fetch(input as RequestInfo, init);
   });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await settle(current);
+});
 
 type View = {
   id: string;
@@ -119,13 +138,51 @@ async function workflowRow(v: Visitor, id: string) {
 const owner = (hostname: string) =>
   env.HostnameRegistry.getByName(hostname).owner();
 
-async function skipSleeps() {
-  const introspector = await introspectWorkflow(env.VERIFY_WORKFLOW);
+type Introspector = Awaited<ReturnType<typeof introspectWorkflow>>;
+const TERMINAL = ["complete", "errored", "terminated"] as const;
+
+// The workflows a test started. afterEach waits for every one of them to finish, so no
+// instance is left sleeping when the runtime tears the test down (that is what printed
+// the "hung" lines).
+let current: Introspector | null = null;
+
+async function watchWorkflows(): Promise<Introspector> {
+  current = await introspectWorkflow(env.VERIFY_WORKFLOW);
+  return current;
+}
+
+async function skipSleeps(): Promise<Introspector> {
+  const introspector = await watchWorkflows();
   await introspector.modifyAll(async (m) => {
     await m.disableSleeps();
     await m.disableRetryDelays();
   });
   return introspector;
+}
+
+// Instance ids started in the current test, recorded by the spy in beforeEach.
+let started: string[] = [];
+
+async function waitUntilFinished(id: string) {
+  const deadline = Date.now() + 20_000;
+  for (;;) {
+    const { status } = await (await env.VERIFY_WORKFLOW.get(id)).status();
+    if ((TERMINAL as readonly string[]).includes(status)) return;
+    if (Date.now() > deadline)
+      throw new Error(`workflow ${id} was left ${status}`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+// Waits for every instance the test started to finish, then drops the test's workflow
+// modifications. Nothing is left sleeping when the runtime tears the test down.
+async function settle(introspector: Introspector | null) {
+  try {
+    for (const id of started.splice(0)) await waitUntilFinished(id);
+  } finally {
+    await introspector?.dispose();
+    if (current === introspector) current = null;
+  }
 }
 
 describe("schedule", () => {
@@ -178,13 +235,14 @@ describe("happy path", () => {
       await instance.waitForStatus("complete");
       expect(await instance.getOutput()).toEqual({ outcome: "active" });
     } finally {
-      await introspector.dispose();
+      await settle(introspector);
     }
   });
 
   it("never reaches the network: without a fixture, DoH calls are refused", async () => {
-    vi.restoreAllMocks();
-    const introspector = await introspectWorkflow(env.VERIFY_WORKFLOW);
+    // Only the DNS fixture is removed. The refusing guard from setup.ts is underneath.
+    fetchSpy?.mockRestore();
+    const introspector = await skipSleeps();
     try {
       const v = await visitor();
       const before = refusedFetches.length;
@@ -200,8 +258,26 @@ describe("happy path", () => {
           .every((u) => u.startsWith("https://cloudflare-dns.com/"))
       ).toBe(true);
       expect(refusedFetches.length).toBeGreaterThan(before);
+      // Recording the check pushes the new findings even though the row stays pending.
+      await instance.waitForStepResult({ name: "record-0" });
+      const pushed = await runInDurableObject(
+        agent(v),
+        (a: TenantAgent) => a.state
+      );
+      const row = pushed.hostnames.find(
+        (x) => x.hostname === "offline.example.com"
+      );
+      expect(row?.state).toBe("pending");
+      expect(row?.last_checked_at).not.toBeNull();
+      expect(row?.finding_codes).toContain("DNS_ERROR");
+      // Fence the row so the run ends at its next record step instead of polling on.
+      await runInDurableObject(agent(v), (_a, state) => {
+        state.storage.sql.exec(
+          "UPDATE hostnames SET state = 'deleted' WHERE hostname = 'offline.example.com'"
+        );
+      });
     } finally {
-      await introspector.dispose();
+      await settle(introspector);
     }
   });
 });
@@ -257,11 +333,12 @@ describe("steps running twice", () => {
         generation: h.generation
       });
     } finally {
-      await introspector.dispose();
+      await settle(introspector);
     }
   });
 
   it("each callback is a no-op when repeated", async () => {
+    await skipSleeps();
     const v = await visitor();
     await runInDurableObject(agent(v), async (a: TenantAgent, state) => {
       const svc = state.storage.sql;
@@ -291,7 +368,7 @@ describe("steps running twice", () => {
 
 describe("delete", () => {
   it("terminates a polling workflow, releases nothing it never claimed, then deletes", async () => {
-    const introspector = await introspectWorkflow(env.VERIFY_WORKFLOW);
+    const introspector = await watchWorkflows();
     try {
       const v = await visitor();
       const h = await create(v, "mid.example.com");
@@ -311,7 +388,7 @@ describe("delete", () => {
         "deleted"
       ]);
     } finally {
-      await introspector.dispose();
+      await settle(introspector);
     }
   });
 
@@ -336,11 +413,12 @@ describe("delete", () => {
       serveToken(b);
       await waitForState(bob, b.id, ["active"]);
     } finally {
-      await introspector.dispose();
+      await settle(introspector);
     }
   });
 
   it("fences late steps after delete and after re-add with a new generation", async () => {
+    await skipSleeps();
     const v = await visitor();
     await runInDurableObject(agent(v), async (a: TenantAgent, state) => {
       const first = await a.apiCreate({
@@ -383,6 +461,12 @@ describe("delete", () => {
         { state: "deleted", generation: old.generation },
         { state: "pending", generation: second.hostname.generation }
       ]);
+      // Fence the re-added row too, so its run stops at the next step instead of
+      // polling through the whole schedule.
+      state.storage.sql.exec(
+        "UPDATE hostnames SET state = 'deleted' WHERE id = ?",
+        second.hostname.id
+      );
     });
   });
 });
@@ -409,7 +493,7 @@ describe("two visitors race for one hostname", () => {
         generation: winnerRow.generation
       });
     } finally {
-      await introspector.dispose();
+      await settle(introspector);
     }
   });
 });
@@ -437,14 +521,14 @@ describe("reconcile", () => {
       expect(await introspector.get()).toHaveLength(1);
     } finally {
       setWorkflow.mockRestore();
-      await introspector.dispose();
+      await settle(introspector);
     }
   });
 
   it("restarts a run the engine still calls in progress but that stopped making progress", async () => {
     // Regression: a local runtime crash lost a sleeping instance's wake-up. The engine
     // kept reporting it as in progress, so reconcile never restarted the row.
-    const introspector = await introspectWorkflow(env.VERIFY_WORKFLOW);
+    const introspector = await watchWorkflows();
     try {
       const v = await visitor();
       const h = await create(v, "stalled.example.com");
@@ -464,6 +548,11 @@ describe("reconcile", () => {
       const before = await (await env.VERIFY_WORKFLOW.get(runOne)).status();
       expect(["waiting", "running", "queued"]).toContain(before.status);
 
+      // Run 2 starts during reconcile. It skips sleeps so it can finish once DNS matches.
+      await introspector.modifyAll(async (m) => {
+        await m.disableSleeps();
+        await m.disableRetryDelays();
+      });
       const report = await runInDurableObject(agent(v), (a: TenantAgent) =>
         a.reconcile()
       );
@@ -473,13 +562,15 @@ describe("reconcile", () => {
       expect(
         (await (await env.VERIFY_WORKFLOW.get(runOne)).status()).status
       ).toBe("terminated");
+      serveToken(h);
+      await waitForState(v, h.id, ["active"]);
     } finally {
-      await introspector.dispose();
+      await settle(introspector);
     }
   });
 
   it("leaves a sleeping run with a recent heartbeat alone", async () => {
-    const introspector = await introspectWorkflow(env.VERIFY_WORKFLOW);
+    const introspector = await watchWorkflows();
     try {
       const v = await visitor();
       const h = await create(v, "healthy-sleep.example.com");
@@ -491,8 +582,14 @@ describe("reconcile", () => {
       expect(report.stalled).toEqual([]);
       expect(report.restarted).toEqual([]);
       expect((await workflowRow(v, h.id)).workflow_run).toBe(1);
+      // This run is asleep on purpose. End it so nothing is left running.
+      await (
+        await env.VERIFY_WORKFLOW.get(
+          `${v.payload.sid}-${h.id}-g${h.generation}-r1`
+        )
+      ).terminate();
     } finally {
-      await introspector.dispose();
+      await settle(introspector);
     }
   });
 
@@ -516,11 +613,12 @@ describe("reconcile", () => {
       serveToken(h);
       await waitForState(v, h.id, ["active"]);
     } finally {
-      await introspector.dispose();
+      await settle(introspector);
     }
   });
 
   it("releases a claim left behind by a deleted row", async () => {
+    await skipSleeps();
     const v = await visitor();
     const report = await runInDurableObject(
       agent(v),
@@ -570,11 +668,12 @@ describe("reconcile", () => {
       expect(report.conflicted).toEqual([h.id]);
       expect((await get(v, h.id)).state).toBe("conflict");
     } finally {
-      await introspector.dispose();
+      await settle(introspector);
     }
   });
 
   it("finishes a delete stuck in deleting once the release works", async () => {
+    await skipSleeps();
     const v = await visitor();
     const h = await create(v, "stuck.example.com");
     const release = vi
@@ -624,7 +723,7 @@ describe("give up and retry", () => {
       serveToken(h);
       await waitForState(v, h.id, ["active"]);
     } finally {
-      await introspector.dispose();
+      await settle(introspector);
     }
   }, 90_000);
 });

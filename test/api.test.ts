@@ -1,7 +1,13 @@
 // REST v1 through the real Worker: cookie, origin, schemas, ETags, idempotency, paging.
-import { SELF } from "cloudflare:test";
+import {
+  SELF,
+  env,
+  evictDurableObject,
+  runInDurableObject
+} from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { LIMITS } from "../src/config/limits";
+import type { TenantAgent } from "../src/server";
 import wranglerConfig from "../wrangler.jsonc?raw";
 import {
   BASE,
@@ -415,5 +421,29 @@ describe("service zone", () => {
       const body = (await problemOf(res, 400)) as { detail?: string };
       expect(body.detail).toContain("belongs to the service");
     }
+  });
+});
+
+describe("pushed state", () => {
+  it("rebuilds the table it pushes to clients when the agent starts", async () => {
+    const v = await visitor();
+    const h = await create(v, "restart.example.com");
+    const stub = env.TenantAgent.getByName(v.payload.sid);
+    // Persist a stale copy, as older code or a missed update would leave behind, and
+    // change the row underneath it. Failed rows also keep reconcile off the workflow.
+    await runInDurableObject(stub, (a: TenantAgent, state) => {
+      a.setState({ hostnames: [], updated_at: "2000-01-01T00:00:00.000Z" });
+      state.storage.sql.exec(
+        "UPDATE hostnames SET state = 'failed' WHERE id = ?",
+        h.id
+      );
+    });
+    await evictDurableObject(stub);
+    expect((await get(v)).status).toBe(200);
+    const state = await runInDurableObject(stub, (a: TenantAgent) => a.state);
+    expect(state.updated_at).not.toBe("2000-01-01T00:00:00.000Z");
+    expect(state.hostnames.map((x) => [x.id, x.hostname, x.state])).toEqual([
+      [h.id, "restart.example.com", "failed"]
+    ]);
   });
 });

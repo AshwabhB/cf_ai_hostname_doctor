@@ -187,3 +187,43 @@ path to Workers AI, was never called.
   Reconcile finishes any delete that stalls and releases claims left by deleted rows.
 - Unit tests never reach the network: `test/setup.ts` replaces `fetch` with a guard, and a
   test proves the workflow's DoH calls are refused unless a fixture is installed.
+
+## Browser UI
+
+- **The model cannot open the delete dialog.** `propose_delete` only produces a card in the
+  chat. The dialog opens when the user clicks the card's "Delete {hostname}..." button,
+  names the hostname in its title, and calls `confirmDelete` with the card's ETag only when
+  the user presses Delete. Nothing in a tool result, model text or pushed state opens it.
+  Why: model output is untrusted and can be steered by text in a DNS record or a pasted
+  message. A dialog that popped up on the model's say-so would turn a prompt injection
+  into a one-click delete, aimed at a user who never asked for one. Two clicks the user
+  starts, and an ETag that must still match on the server, keep the decision with them.
+- Assistant text renders through Streamdown with `skipHtml`, and `img`, `iframe`, `script`
+  and `style` disallowed. Links render as links only for `https:`, with
+  `target="_blank" rel="noopener noreferrer"`. Every other scheme (`http:`,
+  `javascript:`, `data:`, relative) renders as plain text. Images render as nothing, so
+  no remote host is contacted.
+- Tool results render as small cards, never raw JSON. DNS names, TXT values and observed
+  records are plain text through React, never markdown or HTML. No component uses
+  `dangerouslySetInnerHTML`.
+- The browser only calls its own origin: the REST reads for the drawer and the agent
+  socket.
+
+## Response headers
+
+- Production responses carry:
+  - `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self';
+    img-src 'self'; font-src 'self'; connect-src 'self'
+    wss://hostname-doctor.bhatnagarashwabh.workers.dev; object-src 'none'; base-uri
+    'none'; form-action 'self'; frame-ancestors 'none'`
+  - `X-Content-Type-Options: nosniff`
+  - `Referrer-Policy: no-referrer`
+- One source, `src/config/security-headers.ts`. The build writes it into the static
+  assets' `_headers` file (a build-only plugin in `vite.config.ts`), and the Worker adds
+  it to its own JSON, problem and history responses. The WebSocket upgrade (101) is left
+  untouched.
+- No `unsafe-eval` and no `unsafe-inline`. The theme script moved out of `index.html`
+  into `public/theme.js`, so no inline script is needed. No style hashes were needed:
+  React sets styles through the DOM, which `style-src 'self'` allows.
+- `vite dev` does not apply the assets' `_headers`, because Vite injects inline scripts
+  in dev. The policy was checked under `vite preview` of the production build.

@@ -13,7 +13,10 @@ const allFiles = import.meta.glob(
 ) as Record<string, string>;
 
 // Browser files run in the visitor's tab and only call our own origin.
-const BROWSER_FILES = new Set(["../src/app.tsx", "../src/client.tsx"]);
+const isBrowserFile = (file: string) =>
+  file === "../src/app.tsx" ||
+  file === "../src/client.tsx" ||
+  file.startsWith("../src/ui/");
 const DOH_FILE = "../src/dns/doh.ts";
 
 // Built from code points so this file never holds the characters it looks for.
@@ -47,10 +50,30 @@ describe("source rules", () => {
 
   it("makes outbound fetches only from the DoH client", () => {
     const offenders = Object.entries(sources)
-      .filter(([file]) => file !== DOH_FILE && !BROWSER_FILES.has(file))
+      .filter(([file]) => file !== DOH_FILE && !isBrowserFile(file))
       .filter(([, text]) => /\bfetch\s*\(/.test(text))
       .map(([file]) => file);
     expect(offenders).toEqual([]);
+  });
+
+  it("never injects HTML or loads remote URLs from browser code", () => {
+    const browser = Object.entries(sources).filter(([file]) =>
+      isBrowserFile(file)
+    );
+    expect(browser.length).toBeGreaterThan(3);
+    const offenders = browser
+      .filter(([, text]) =>
+        /dangerouslySetInnerHTML|\.innerHTML\s*=|\beval\s*\(|new Function\s*\(/.test(
+          text
+        )
+      )
+      .map(([file]) => file);
+    expect(offenders).toEqual([]);
+    // Browser fetches take a same-origin path, never a full URL.
+    const remote = browser
+      .filter(([, text]) => /\bfetch\s*\(\s*["'`]https?:/.test(text))
+      .map(([file]) => file);
+    expect(remote).toEqual([]);
   });
 
   it("names only cloudflare-dns.com as a remote endpoint in the DoH client", () => {

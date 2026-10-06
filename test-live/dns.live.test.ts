@@ -1,5 +1,7 @@
 // Live DNS against cloudflare-dns.com. Opt in with `npm run test:live-dns`.
-// LIVE_DUCKDNS_TXT overrides the TXT value currently set on the DuckDNS demo domain.
+// The DuckDNS case needs LIVE_DUCKDNS_TXT set to the TXT value currently on the demo
+// domain. Without it that case is skipped, never run against a guessed value.
+import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { LIMITS } from "../src/config/limits";
 import { MemoryDnsCache } from "../src/dns/cache";
@@ -7,9 +9,7 @@ import { diagnose } from "../src/dns/diagnose";
 import { DohClient, defaultDohDeps } from "../src/dns/doh";
 
 const FALLBACK = "hostname-doctor.bhatnagarashwabh.workers.dev";
-const DUCKDNS_TXT =
-  (globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.LIVE_DUCKDNS_TXT ?? "hd-test-123";
+const DUCKDNS_TXT = (env as { LIVE_DUCKDNS_TXT?: string }).LIVE_DUCKDNS_TXT;
 
 async function live(hostname: string, token: string) {
   const client = new DohClient(defaultDohDeps(new MemoryDnsCache()));
@@ -39,11 +39,14 @@ describe("live DNS", () => {
     expect(r.lookups).toBeLessThanOrEqual(LIMITS.dns.maxLookupsPerDiagnosis);
   });
 
-  it("ashwabh-demo.duckdns.org: the DuckDNS TXT verifies, and it is treated as an apex", async () => {
-    const r = await live("ashwabh-demo.duckdns.org", DUCKDNS_TXT);
-    expect(codes(r)).not.toContain("TXT_MISSING");
-    expect(codes(r)).not.toContain("TXT_MISMATCH");
-    expect(codes(r)).toContain("APEX_CNAME");
-    expect(r.verifiable).toBe(true);
-  });
+  it.skipIf(!DUCKDNS_TXT)(
+    "ashwabh-demo.duckdns.org: the DuckDNS TXT verifies, and it is treated as an apex (needs LIVE_DUCKDNS_TXT)",
+    async () => {
+      const r = await live("ashwabh-demo.duckdns.org", DUCKDNS_TXT ?? "");
+      expect(codes(r)).not.toContain("TXT_MISSING");
+      expect(codes(r)).not.toContain("TXT_MISMATCH");
+      expect(codes(r)).toContain("APEX_CNAME");
+      expect(r.verifiable).toBe(true);
+    }
+  );
 });
