@@ -16,14 +16,15 @@
     "deploy": "vite build && wrangler deploy",
     "types": "wrangler types env.d.ts",
     "format": "oxfmt --write .",
-    "lint": "oxlint src/ test/ test-live/ spikes/",
+    "lint": "oxlint src/ test/ test-live/ spikes/ eval/",
     "check": "npm run typecheck && npm run lint && npm test && npm run build",
     "typecheck": "tsc",
     "test": "vitest run --config vitest.config.ts",
     "build": "vite build",
     "spikes": "vitest run --config vitest.spikes.config.ts",
     "spike:a": "node spikes/a-tool-calls/run.mjs",
-    "test:live-dns": "vitest run --config vitest.live.config.ts"
+    "test:live-dns": "vitest run --config vitest.live.config.ts",
+    "eval:live": "node eval/run.mjs"
   },
   "dependencies": {
     "@ai-sdk/react": "^4.0.0",
@@ -64,5 +65,12 @@
     "workerd@1.20260815.1": true,
     "workerd@1.20261001.1": true,
     "core-js-pure@3.50.0": true
+  },
+  "overrides": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/client": "2.3.1",
+    "tinypool": "2.2.0",
+    "sharp": "0.35.5",
+    "undici": "7.30.0"
   }
 }

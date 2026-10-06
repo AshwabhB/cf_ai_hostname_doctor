@@ -3,10 +3,12 @@
 // but cannot open this dialog or press its button.
 import { Button, Dialog } from "@cloudflare/kumo";
 import { useState } from "react";
+import { AsciiName } from "./AsciiName";
 
 export type DeleteTarget = {
   id: string;
   etag: string;
+  hostname: string;
   display_hostname: string;
 };
 
@@ -35,6 +37,10 @@ export function ConfirmDelete({ target, onClose, onConfirm }: Props) {
         <Dialog.Title className="text-base font-semibold">
           Delete {target?.display_hostname}?
         </Dialog.Title>
+        <AsciiName
+          ascii={target?.hostname ?? ""}
+          display={target?.display_hostname ?? ""}
+        />
         <Dialog.Description className="mt-2 text-sm text-kumo-subtle">
           This stops verification and removes {target?.display_hostname} from
           your hostnames. Its traffic will no longer be served. You can add it

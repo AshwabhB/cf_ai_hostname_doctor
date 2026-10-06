@@ -18,6 +18,7 @@ import {
 } from "./format";
 import type { HostnameRow } from "./HostnameTable";
 import { Records } from "./Records";
+import { AsciiName } from "./AsciiName";
 
 type Loaded = {
   detail: HostnameDetail;
@@ -110,6 +111,7 @@ export function HostnameDrawer({
               <h2 id="drawer-title" className="text-lg font-semibold break-all">
                 {row.display_hostname}
               </h2>
+              <AsciiName ascii={row.hostname} display={row.display_hostname} />
               {isHostnameState(row.state) && (
                 <Badge variant={STATE_BADGE[row.state]}>
                   {STATE_LABEL[row.state]}

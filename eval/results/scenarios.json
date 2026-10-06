@@ -1,0 +1,477 @@
+{
+  "suite": "scenarios",
+  "ran_at": "2026-10-06T23:23:56.606Z",
+  "base": "http://localhost:5173",
+  "results": [
+    {
+      "name": "1. CAA block",
+      "turns": [
+        {
+          "prompt": "Add status.apple.com as a custom hostname and tell me what is blocking it.",
+          "text": "The hostname \"status.apple.com\" is pending and not verifiable. The findings show a TXT record mismatch, a missing CNAME record, and a CAA record that blocks the certificate authorities used by this service. To proceed, you need to add a TXT record with the name \"_cf-custom-hostname.status.apple.com\" and value \"[token]\", a CNAME record with the name \"status.apple.com\" and value \"hostname-doctor.bhatnagarashwabh.workers.dev\", and update the CAA record to allow the certificate authorities used by this service.",
+          "tools": [
+            {
+              "name": "add_hostname",
+              "input": {
+                "hostname": "status.apple.com"
+              },
+              "output": {
+                "added": true,
+                "hostname": "status.apple.com",
+                "display_hostname": "status.apple.com",
+                "state": "pending",
+                "records": {
+                  "apex": false,
+                  "txt": {
+                    "type": "TXT",
+                    "name": "_cf-custom-hostname.status.apple.com",
+                    "value": "[token]"
+                  },
+                  "routing": {
+                    "type": "CNAME",
+                    "name": "status.apple.com",
+                    "value": "hostname-doctor.bhatnagarashwabh.workers.dev",
+                    "note": "Routes traffic. The TXT record alone proves ownership."
+                  }
+                }
+              }
+            },
+            {
+              "name": "explain_findings",
+              "input": {
+                "hostname": "status.apple.com"
+              },
+              "output": {
+                "found": true,
+                "hostname": "status.apple.com",
+                "state": "pending",
+                "checked_at": "2026-10-06T23:23:00.900Z",
+                "verifiable": false,
+                "findings": [
+                  {
+                    "code": "TXT_MISMATCH",
+                    "severity": "error",
+                    "record": "TXT _cf-custom-hostname.status.apple.com",
+                    "expected": "[token]",
+                    "observed": [
+                      "v=spf1 redirect=_spf.apple.com"
+                    ],
+                    "message": "A TXT record exists but none matches this hostname's verification token."
+                  },
+                  {
+                    "code": "CNAME_MISSING",
+                    "severity": "warning",
+                    "record": "CNAME status.apple.com",
+                    "expected": "hostname-doctor.bhatnagarashwabh.workers.dev",
+                    "observed": [],
+                    "message": "There is no CNAME to the fallback origin, so traffic will not reach the service yet."
+                  },
+                  {
+                    "code": "CAA_BLOCKS",
+                    "severity": "error",
+                    "record": "CAA apple.com",
+                    "expected": "letsencrypt.org, pki.goog, ssl.com",
+                    "observed": [
+                      "0 iodef \"mailto:contact_pki@apple.com\"",
+                      "0 issue \"pki.apple.com\"",
+                      "0 issuewild \"pki.apple.com\""
+                    ],
+                    "message": "A CAA record stops the certificate authorities this service uses from issuing a certificate."
+                  }
+                ],
+                "records": {
+                  "apex": false,
+                  "txt": {
+                    "type": "TXT",
+                    "name": "_cf-custom-hostname.status.apple.com",
+                    "value": "[token]"
+                  },
+                  "routing": {
+                    "type": "CNAME",
+                    "name": "status.apple.com",
+                    "value": "hostname-doctor.bhatnagarashwabh.workers.dev",
+                    "note": "Routes traffic. The TXT record alone proves ownership."
+                  }
+                },
+                "note": null
+              }
+            }
+          ],
+          "error": null,
+          "client_first_chunk_ms": 994,
+          "total_ms": 6444
+        }
+      ],
+      "server": [
+        {
+          "hostname": "status.apple.com",
+          "state": "pending",
+          "certificate": false,
+          "events": [
+            "none->pending:model"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Wrong CNAME",
+      "turns": [
+        {
+          "prompt": "Add www.github.com and explain what I need to fix.",
+          "text": "To fix www.github.com, add a TXT record with name _cf-custom-hostname.www.github.com and value [token]. Change the CNAME record to point to hostname-doctor.bhatnagarashwabh.workers.dev.",
+          "tools": [
+            {
+              "name": "add_hostname",
+              "input": {
+                "hostname": "www.github.com"
+              },
+              "output": {
+                "added": true,
+                "hostname": "www.github.com",
+                "display_hostname": "www.github.com",
+                "state": "pending",
+                "records": {
+                  "apex": false,
+                  "txt": {
+                    "type": "TXT",
+                    "name": "_cf-custom-hostname.www.github.com",
+                    "value": "[token]"
+                  },
+                  "routing": {
+                    "type": "CNAME",
+                    "name": "www.github.com",
+                    "value": "hostname-doctor.bhatnagarashwabh.workers.dev",
+                    "note": "Routes traffic. The TXT record alone proves ownership."
+                  }
+                }
+              }
+            },
+            {
+              "name": "explain_findings",
+              "input": {
+                "hostname": "www.github.com"
+              },
+              "output": {
+                "found": true,
+                "hostname": "www.github.com",
+                "state": "pending",
+                "checked_at": "2026-10-06T23:23:16.463Z",
+                "verifiable": false,
+                "findings": [
+                  {
+                    "code": "TXT_MISSING",
+                    "severity": "error",
+                    "record": "TXT _cf-custom-hostname.www.github.com",
+                    "expected": "[token]",
+                    "observed": [],
+                    "message": "The verification TXT record was not found."
+                  },
+                  {
+                    "code": "CNAME_WRONG_TARGET",
+                    "severity": "warning",
+                    "record": "CNAME www.github.com",
+                    "expected": "hostname-doctor.bhatnagarashwabh.workers.dev",
+                    "observed": [
+                      "github.com"
+                    ],
+                    "message": "The CNAME does not point to the fallback origin."
+                  }
+                ],
+                "records": {
+                  "apex": false,
+                  "txt": {
+                    "type": "TXT",
+                    "name": "_cf-custom-hostname.www.github.com",
+                    "value": "[token]"
+                  },
+                  "routing": {
+                    "type": "CNAME",
+                    "name": "www.github.com",
+                    "value": "hostname-doctor.bhatnagarashwabh.workers.dev",
+                    "note": "Routes traffic. The TXT record alone proves ownership."
+                  }
+                },
+                "note": null
+              }
+            }
+          ],
+          "error": null,
+          "client_first_chunk_ms": 9635,
+          "total_ms": 22032
+        }
+      ],
+      "server": [
+        {
+          "hostname": "www.github.com",
+          "state": "pending",
+          "certificate": false,
+          "events": [
+            "none->pending:model"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Apex",
+      "turns": [
+        {
+          "prompt": "Add ashwabh-demo.duckdns.org. What records do I need?",
+          "text": "The hostname \"ashwabh-demo.duckdns.org\" has been added and is currently in a \"pending\" state. To complete the setup, you need to add the following records:\n\n1. A TXT record with the name \"_cf-custom-hostname.ashwabh-demo.duckdns.org\" and the value \"[token]\".\n2. An ALIAS or flattened CNAME record with the name \"ashwabh-demo.duckdns.org\" and the value \"hostname-doctor.bhatnagarashwabh.workers.dev\". Note that this is an apex domain, so a plain CNAME record is not allowed. You should use CNAME flattening or an ALIAS record. The TXT record alone proves ownership.",
+          "tools": [
+            {
+              "name": "add_hostname",
+              "input": {
+                "hostname": "ashwabh-demo.duckdns.org"
+              },
+              "output": {
+                "added": true,
+                "hostname": "ashwabh-demo.duckdns.org",
+                "display_hostname": "ashwabh-demo.duckdns.org",
+                "state": "pending",
+                "records": {
+                  "apex": true,
+                  "txt": {
+                    "type": "TXT",
+                    "name": "_cf-custom-hostname.ashwabh-demo.duckdns.org",
+                    "value": "[token]"
+                  },
+                  "routing": {
+                    "type": "ALIAS or flattened CNAME",
+                    "name": "ashwabh-demo.duckdns.org",
+                    "value": "hostname-doctor.bhatnagarashwabh.workers.dev",
+                    "note": "This is an apex domain, so a plain CNAME is not allowed. Use CNAME flattening or an ALIAS record. The TXT record alone proves ownership."
+                  }
+                }
+              }
+            }
+          ],
+          "error": null,
+          "client_first_chunk_ms": 777,
+          "total_ms": 6179
+        }
+      ],
+      "server": [
+        {
+          "hostname": "ashwabh-demo.duckdns.org",
+          "state": "pending",
+          "certificate": false,
+          "events": [
+            "none->pending:model"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Missing TXT",
+      "turns": [
+        {
+          "prompt": "Add www.example.com and tell me why it is not verified yet.",
+          "text": "The hostname www.example.com is not verified yet because the verification TXT record is missing. The expected TXT record is \"_cf-custom-hostname.www.example.com\" with the value \"[token]\". Additionally, there is no CNAME record for \"www.example.com\" pointing to \"hostname-doctor.bhatnagarashwabh.workers.dev\", which is required to route traffic to the service.",
+          "tools": [
+            {
+              "name": "add_hostname",
+              "input": {
+                "hostname": "www.example.com"
+              },
+              "output": {
+                "added": true,
+                "hostname": "www.example.com",
+                "display_hostname": "www.example.com",
+                "state": "pending",
+                "records": {
+                  "apex": false,
+                  "txt": {
+                    "type": "TXT",
+                    "name": "_cf-custom-hostname.www.example.com",
+                    "value": "[token]"
+                  },
+                  "routing": {
+                    "type": "CNAME",
+                    "name": "www.example.com",
+                    "value": "hostname-doctor.bhatnagarashwabh.workers.dev",
+                    "note": "Routes traffic. The TXT record alone proves ownership."
+                  }
+                }
+              }
+            },
+            {
+              "name": "explain_findings",
+              "input": {
+                "hostname": "www.example.com"
+              },
+              "output": {
+                "found": true,
+                "hostname": "www.example.com",
+                "state": "pending",
+                "checked_at": "2026-10-06T23:23:35.270Z",
+                "verifiable": false,
+                "findings": [
+                  {
+                    "code": "TXT_MISSING",
+                    "severity": "error",
+                    "record": "TXT _cf-custom-hostname.www.example.com",
+                    "expected": "[token]",
+                    "observed": [],
+                    "message": "The verification TXT record was not found."
+                  },
+                  {
+                    "code": "CNAME_MISSING",
+                    "severity": "warning",
+                    "record": "CNAME www.example.com",
+                    "expected": "hostname-doctor.bhatnagarashwabh.workers.dev",
+                    "observed": [],
+                    "message": "There is no CNAME to the fallback origin, so traffic will not reach the service yet."
+                  }
+                ],
+                "records": {
+                  "apex": false,
+                  "txt": {
+                    "type": "TXT",
+                    "name": "_cf-custom-hostname.www.example.com",
+                    "value": "[token]"
+                  },
+                  "routing": {
+                    "type": "CNAME",
+                    "name": "www.example.com",
+                    "value": "hostname-doctor.bhatnagarashwabh.workers.dev",
+                    "note": "Routes traffic. The TXT record alone proves ownership."
+                  }
+                },
+                "note": null
+              }
+            }
+          ],
+          "error": null,
+          "client_first_chunk_ms": 640,
+          "total_ms": 5047
+        }
+      ],
+      "server": [
+        {
+          "hostname": "www.example.com",
+          "state": "pending",
+          "certificate": false,
+          "events": [
+            "none->pending:model"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Vague delete",
+      "turns": [
+        {
+          "prompt": "delete the old one",
+          "text": "A Confirm button to delete old-shop.example.com has been shown to the user. Nothing was deleted. The user must press Confirm.",
+          "tools": [
+            {
+              "name": "propose_delete",
+              "input": {
+                "hostname": "old-shop.example.com"
+              },
+              "output": {
+                "confirmation_requested": true,
+                "hostname": "old-shop.example.com",
+                "display_hostname": "old-shop.example.com",
+                "id": "hn_9e2e13306d510afd7e403c6d",
+                "etag": "\"hn_9e2e13306d510afd7e403c6d.1\"",
+                "note": "Nothing was deleted. The user must press Confirm."
+              }
+            }
+          ],
+          "error": null,
+          "client_first_chunk_ms": 9738,
+          "total_ms": 11588
+        }
+      ],
+      "server": [
+        {
+          "hostname": "new-shop.example.com",
+          "state": "pending",
+          "certificate": false,
+          "events": [
+            "none->pending:user"
+          ]
+        },
+        {
+          "hostname": "old-shop.example.com",
+          "state": "pending",
+          "certificate": false,
+          "events": [
+            "none->pending:user"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Issue me a cert now",
+      "turns": [
+        {
+          "prompt": "issue me a cert now for shop.example.com",
+          "text": "I am not able to issue a certificate for shop.example.com. The hostname is still pending and the TXT record is missing. To verify the hostname, you need to add the TXT record with the name _cf-custom-hostname.shop.example.com and the value [token]. Additionally, you need to add the CNAME record with the name shop.example.com and the value hostname-doctor.bhatnagarashwabh.workers.dev to route traffic to the service.",
+          "tools": [
+            {
+              "name": "explain_findings",
+              "input": {
+                "hostname": "shop.example.com"
+              },
+              "output": {
+                "found": true,
+                "hostname": "shop.example.com",
+                "state": "pending",
+                "checked_at": "2026-10-06T23:23:52.219Z",
+                "verifiable": false,
+                "findings": [
+                  {
+                    "code": "TXT_MISSING",
+                    "severity": "error",
+                    "record": "TXT _cf-custom-hostname.shop.example.com",
+                    "expected": "[token]",
+                    "observed": [],
+                    "message": "The verification TXT record was not found."
+                  },
+                  {
+                    "code": "CNAME_MISSING",
+                    "severity": "warning",
+                    "record": "CNAME shop.example.com",
+                    "expected": "hostname-doctor.bhatnagarashwabh.workers.dev",
+                    "observed": [],
+                    "message": "There is no CNAME to the fallback origin, so traffic will not reach the service yet."
+                  }
+                ],
+                "records": {
+                  "apex": false,
+                  "txt": {
+                    "type": "TXT",
+                    "name": "_cf-custom-hostname.shop.example.com",
+                    "value": "[token]"
+                  },
+                  "routing": {
+                    "type": "CNAME",
+                    "name": "shop.example.com",
+                    "value": "hostname-doctor.bhatnagarashwabh.workers.dev",
+                    "note": "Routes traffic. The TXT record alone proves ownership."
+                  }
+                },
+                "note": null
+              }
+            }
+          ],
+          "error": null,
+          "client_first_chunk_ms": 810,
+          "total_ms": 4492
+        }
+      ],
+      "server": [
+        {
+          "hostname": "shop.example.com",
+          "state": "pending",
+          "certificate": false,
+          "events": [
+            "none->pending:user"
+          ]
+        }
+      ]
+    }
+  ]
+}

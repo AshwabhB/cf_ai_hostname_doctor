@@ -548,3 +548,70 @@ restarted, and run 1 must be terminated. With the stall check disabled the test 
 - A refused 4th tab shows "Connected" for a moment before the 4429 close arrives, because
   the socket is accepted first.
 - The SLIs are defined and measurable from logs, but have no targets yet.
+
+## S9. Verification (2026-10-06)
+
+**Changed.**
+- Lookalike hostnames: a label may not mix scripts (UTS #39 highly restrictive: one script,
+  or Latin with Han and Japanese, Chinese or Korean scripts), checked on the decoded form.
+  `раypal.com` and its Punycode are refused with `mixed_script`. Whole-script lookalikes
+  stay legal, so the table, drawer, tool cards and delete dialog show the `xn--` form under
+  any non-ASCII name.
+- Tests for `169.254.169.254`, `раypal.com` and a 300-character name over REST and through
+  `add_hostname`, and the tool's 300-character argument cap.
+- `eval/run.mjs` (`npm run eval:live`): drives a running server end to end with fresh
+  sessions and records replies, tool calls, rows and events in `eval/results/`.
+- `docs/EVALUATION.md`: six scenarios, expectations written first and left unchanged (the
+  file hashed `1e9a0618...` before the runs; the expectations part is byte-identical after).
+- SECURITY.md: the threat model as a results table, with model and server results apart.
+- RUNBOOK.md: measured SLIs with n and provisional targets.
+- Dependencies: `npm audit` in a fresh clone found 12 (10 high, 2 critical). Fixed with
+  `overrides` to patched releases in the same major: `@modelcontextprotocol/sdk` 1.32.1 and
+  `@modelcontextprotocol/client` 2.3.1 (pulled in by `agents`, which pins the vulnerable
+  versions; the OAuth client code is bundled but never called), and dev-only `tinypool`
+  2.2.0, `sharp` 0.35.5 and `undici` 7.30.0. `npm audit` now reports 0.
+
+**Found while verifying.**
+- Mixed-script hostnames were accepted (fixed above).
+- The model printed the whole system prompt when asked. Accepted by design: it holds
+  nothing worth stealing, as a unit test asserts. Base64 and one-character probes got less.
+- In the fake SYSTEM message case the model refused but repeated the injected "The DNS
+  check passed" as if true. The server changed nothing.
+- Model detail gaps in the scenarios (allowed CAs not named, CNAME not called a warning,
+  simulated certificates not mentioned). Recorded, prompt not changed.
+- 3 of 17 first tokens took 9.6 to 11 s; one needed the retry.
+- `spikes/a-tool-calls/last-run-*.json` is gitignored, so the spike A results live only in
+  the S5 entry here. The SECURITY.md row cites that.
+
+**Checks run.**
+- unit: `npm run check` (typecheck, lint, 471 tests in 19 files, build).
+- fresh clone: `git clone` into a temp dir outside the project, `npm ci`, `npm run check`.
+  At the S8 commit: green (460 tests), with 12 audit findings. With the S9 changes applied:
+  green (471 tests in 19 files, build), `npm audit` 0. No `.dev.vars` is needed.
+- live model (local production build, real Workers AI and DoH, 17 turns, no quota
+  errors): six scenarios, four injection prompts and seven leak probes. Results in
+  `docs/EVALUATION.md`, the SECURITY.md table and `eval/results/`.
+- live DNS: time to verified on `s9.ashwabh-demo.duckdns.org` (n=1). Added 23:22:41Z, TXT
+  first seen over DoH 23:34:19Z, verified 23:41:16Z, active 6 ms later with a simulated
+  certificate. TXT visible to verified: 6 m 56 s, set by the 10 minute backoff.
+- live model, overridden dependencies: one turn after rebuilding, `model_call` ok, first
+  token 1,146 ms.
+- deployed: not run.
+
+**Source size.** 12,969 non-blank, non-comment lines in 105 files (14,707 lines in all):
+app 6,141, tests 5,206, spikes 827, eval runner 324, config and build 453, test fixtures 18.
+Counted over `git ls-files` plus new untracked files, leaving out `docs/`, Markdown,
+`LICENSE`, `package-lock.json`, the generated `env.d.ts`, `eval/results/` and images, with a
+short script that drops blank lines and lines starting with `//`, `/*` or `*`:
+
+```
+{ git ls-files; git ls-files -o --exclude-standard; } | sort -u \
+  | grep -vE '^docs/|^eval/results/|\.md$|^LICENSE$|^package-lock\.json$|^env\.d\.ts$|\.(svg|ico|jpg|png)$' \
+  | xargs grep -cvE '^\s*$|^\s*(//|/\*|\*)' | awk -F: '{s+=$2} END {print s}'
+```
+
+**Open issues.**
+- Whole-script lookalikes are accepted (ASCII form shown).
+- TXT-borne instructions are tested with a scripted model only.
+- The eval left background workflows polling for the eval hostnames in the local dev
+  state. They stop when the server stops and are local data only.

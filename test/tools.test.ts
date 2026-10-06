@@ -183,6 +183,48 @@ describe("tools cannot reach verified, active or delete", () => {
     });
   });
 
+  it("add_hostname refuses an IP literal, a lookalike and an over-long name", async () => {
+    await withTools(async ({ tools, storage }) => {
+      const cases: Array<[string, string]> = [
+        ["169.254.169.254", "IP addresses"],
+        ["раypal.com", "one alphabet"],
+        [`${"a".repeat(296)}.com`, "at most 253"]
+      ];
+      for (const [hostname, text] of cases) {
+        const result = (await call(
+          tools,
+          "add_hostname",
+          { hostname },
+          hostname
+        )) as Record<string, unknown>;
+        expect(result).toMatchObject({ added: false });
+        expect(String(result.error)).toContain(text);
+      }
+      expect(
+        storage.sql.exec("SELECT count(*) AS n FROM hostnames").one().n
+      ).toBe(0);
+    });
+  });
+
+  it("caps a tool's hostname argument before it reaches the service", async () => {
+    await withTools(async ({ tools }) => {
+      const schema = (
+        tools.add_hostname as unknown as {
+          inputSchema: {
+            safeParse(v: unknown): { success: boolean };
+          };
+        }
+      ).inputSchema;
+      const max = LIMITS.chat.toolHostnameMaxChars;
+      expect(schema.safeParse({ hostname: "a".repeat(max) }).success).toBe(
+        true
+      );
+      expect(schema.safeParse({ hostname: "a".repeat(max + 1) }).success).toBe(
+        false
+      );
+    });
+  });
+
   it("tells the model when a hostname is not found", async () => {
     await withTools(async ({ tools }) => {
       for (const name of [

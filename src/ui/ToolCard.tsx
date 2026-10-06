@@ -17,6 +17,7 @@ import {
   isHostnameState
 } from "./format";
 import { Records, type RequiredRecords } from "./Records";
+import { AsciiName } from "./AsciiName";
 
 type Output = Record<string, unknown>;
 
@@ -130,6 +131,7 @@ function body(
             </Text>
             <StateBadge state={o.state} />
           </Title>
+          <AsciiName ascii={String(o.hostname ?? "")} display={host(o)} />
           {o.records ? (
             <Records records={o.records as RequiredRecords} />
           ) : null}
@@ -160,6 +162,7 @@ function body(
       const target: DeleteTarget = {
         id: String(o.id ?? ""),
         etag: String(o.etag ?? ""),
+        hostname: String(o.hostname ?? ""),
         display_hostname: host(o)
       };
       return (
@@ -176,6 +179,10 @@ function body(
           >
             Delete {target.display_hostname}...
           </Button>
+          <AsciiName
+            ascii={target.hostname}
+            display={target.display_hostname}
+          />
         </div>
       );
     }

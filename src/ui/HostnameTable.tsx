@@ -9,6 +9,7 @@ import {
   isHostnameState
 } from "./format";
 import type { RequiredRecords } from "./Records";
+import { AsciiName } from "./AsciiName";
 
 export type HostnameRow = {
   id: string;
@@ -70,6 +71,10 @@ export function HostnameTable({
                 >
                   {row.display_hostname}
                 </span>
+                <AsciiName
+                  ascii={row.hostname}
+                  display={row.display_hostname}
+                />
                 <Text size="xs" variant="secondary">
                   Checked {formatTime(row.last_checked_at)}
                   {row.finding_codes.length > 0

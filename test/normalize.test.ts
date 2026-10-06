@@ -21,7 +21,11 @@ const ok: Array<[string, string, string]> = [
   ["1shop.example.com", "1shop.example.com", "1shop.example.com"],
   [`${"a".repeat(63)}.com`, `${"a".repeat(63)}.com`, `${"a".repeat(63)}.com`],
   ["foo.workers.dev", "foo.workers.dev", "foo.workers.dev"],
-  ["shop.example.com\t", "shop.example.com", "shop.example.com"]
+  ["shop.example.com\t", "shop.example.com", "shop.example.com"],
+  // One script per label is fine, including a whole-Cyrillic name.
+  ["пример.рф", "xn--e1afmkfd.xn--p1ai", "пример.рф"],
+  // Latin with Japanese scripts is an allowed mix.
+  ["shopテスト.jp", "xn--shop-yn4czcp.jp", "shopテスト.jp"]
 ];
 
 const bad: Array<[string, NormalizeError]> = [
@@ -65,7 +69,15 @@ const bad: Array<[string, NormalizeError]> = [
   ["shop.example.com?x=1", "invalid_characters"],
   ["shop%2eexample.com", "invalid_characters"],
   ["xn--zz.com", "invalid_characters"],
-  ["shop.example.com/path", "invalid_characters"]
+  ["shop.example.com/path", "invalid_characters"],
+  // Cyrillic р and а inside a Latin label: looks like paypal.com.
+  ["раypal.com", "mixed_script"],
+  ["xn--ypal-43d9g.com", "mixed_script"],
+  ["shop.gοogle.com", "mixed_script"],
+  ["169.254.169.254", "ip_address"],
+  // 300 characters: over the 253 limit for a whole name.
+  [`${"a".repeat(296)}.com`, "too_long"],
+  [`${Array.from({ length: 75 }, () => "abc").join(".")}.com`, "too_long"]
 ];
 
 describe("normalizeHostname accepts", () => {

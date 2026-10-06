@@ -82,6 +82,22 @@ digits), quote the values themselves rather than a percentile.
 - **Note:** a call that timed out once and succeeded on its one retry includes the first
   attempt's 10 s in its `first_token_ms`.
 
+## Measured values and provisional targets
+
+Measured on 2026-10-06 against the local production build (`vite preview`) with real
+Workers AI and real DoH, during the S9 evaluation. The samples are small, so the targets
+are provisional: revisit them once the deployed app has a week of traffic.
+
+| SLI | Sample | n | Result | Provisional target |
+|---|---|---|---|---|
+| Chat first token | `model_call` lines from the 17 eval turns (6 scenarios, 4 injection, 7 leak) | 17 | p50 706 ms, p90 9,727 ms, max 10,947 ms. 14 of 17 under 1.1 s; 3 between 9.6 and 11 s; 1 of 17 needed the retry after the 10 s timeout. No quota errors | p50 under 1.5 s; p90 under 10 s; under 10% of turns need the retry |
+| Time to verified | one fresh hostname, `s9.ashwabh-demo.duckdns.org` | 1 | Added 23:22:41Z, TXT first seen over DoH 23:34:19Z, verified 23:41:16Z, active 6 ms later. Added to verified 18 m 35 s, most of it waiting for the TXT to be set. TXT visible to verified 6 m 56 s: the TXT appeared 3 minutes into a 10 minute backoff sleep | TXT visible to verified under 11 minutes (one 10 minute backoff plus a check), which the schedule bounds. Added to verified is mostly the customer's DNS, so no target is set on it yet |
+| DoH error rate | `dns_check` lines from the eval and background runs | 48 | 0 of 48 were `dns_error` | under 1% |
+| API p50 | `api_request` lines for `POST /api/v1/hostnames` | 7 | p50 19 ms (12 to 24 ms) | p50 under 100 ms for writes, server side |
+
+The GET routes are left out of the API sample: most were the measurement poller's own
+reads of one hostname, which would flatter the number.
+
 ## Fixes
 
 ### A hostname is stuck in pending

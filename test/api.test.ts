@@ -447,3 +447,21 @@ describe("pushed state", () => {
     ]);
   });
 });
+
+describe("attack inputs", () => {
+  it("refuses an IP literal, a lookalike and a 300 character name with 400", async () => {
+    const v = await visitor();
+    const cases: Array<[string, string]> = [
+      ["169.254.169.254", "IP addresses"],
+      ["раypal.com", "one alphabet"],
+      [`${"a".repeat(296)}.com`, "at most 253"]
+    ];
+    for (const [hostname, text] of cases) {
+      const res = await post(v, { hostname });
+      const body = (await problemOf(res, 400)) as { detail?: string };
+      expect(body.detail).toContain(text);
+    }
+    const list = (await (await get(v)).json()) as { items: unknown[] };
+    expect(list.items).toEqual([]);
+  });
+});
