@@ -1,0 +1,120 @@
+// Worker entry routing. Identity always comes from the signed cookie. The browser
+// asks for the agent named "me", and the router rewrites that to the visitor's sid.
+import { routeAgentRequest } from "agents";
+import { LIMITS } from "./config/limits";
+import { AGENT_ALIAS, SESSION_PATH } from "./config/protocol";
+import {
+  NO_STORE,
+  isAllowedOrigin,
+  isWebSocketUpgrade,
+  problem
+} from "./security/http";
+import {
+  encodeSession,
+  needsRenewal,
+  newSession,
+  readSession,
+  renewed,
+  setCookieHeader,
+  type SessionPayload
+} from "./security/session";
+
+const AGENT_CLASS = "tenant-agent";
+// Query parameter the router sets on the rewritten upgrade URL. TenantAgent reads
+// it from connection.uri, which survives hibernation, to close expired sockets.
+export const SESSION_EXP_PARAM = "__hd_exp";
+
+const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+export async function handleRequest(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const url = new URL(request.url);
+
+  // No CORS anywhere, so preflights are refused outright.
+  if (request.method === "OPTIONS") {
+    return problem(
+      "forbidden",
+      request,
+      "Cross-origin requests are not allowed."
+    );
+  }
+  const needsOrigin = request.method !== "GET" || isWebSocketUpgrade(request);
+  if (needsOrigin && !isAllowedOrigin(request, env)) {
+    return problem("forbidden", request, "Origin not allowed.");
+  }
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (declared > LIMITS.http.maxBodyBytes) {
+    return problem("payload-too-large", request);
+  }
+
+  if (url.pathname === SESSION_PATH) return handleSession(request, env);
+  if (url.pathname.startsWith("/agents/"))
+    return handleAgent(request, env, url);
+  return problem("not-found", request);
+}
+
+// The only route that sets the cookie. Creates a session, or renews one that is
+// close to expiry. An invalid or expired cookie is replaced with a fresh identity.
+async function handleSession(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") return problem("method-not-allowed", request);
+
+  // The IP is only a rate limit key. It is never stored or logged.
+  const ip = request.headers.get("cf-connecting-ip") ?? "local";
+  const { success } = await env.SESSION_LIMITER.limit({ key: ip });
+  if (!success) return problem("rate-limited", request);
+
+  const now = nowSeconds();
+  const current = await readSession(request, env, now);
+  let issue: SessionPayload | null = null;
+  if (!current.ok) issue = newSession(now);
+  else if (needsRenewal(current.payload, now))
+    issue = renewed(current.payload, now);
+
+  const headers = new Headers({ "cache-control": NO_STORE });
+  if (issue) {
+    const token = await encodeSession(issue, env.SESSION_SECRET);
+    headers.set("set-cookie", setCookieHeader(token, issue, env, now));
+  }
+  return new Response(null, { status: 204, headers });
+}
+
+async function handleAgent(
+  request: Request,
+  env: Env,
+  url: URL
+): Promise<Response> {
+  // ["", "agents", "<class>", "<name>", ...rest]
+  const [, , agentClass, name, ...rest] = url.pathname.split("/");
+  if (agentClass !== AGENT_CLASS) return problem("forbidden", request);
+
+  const session = await readSession(request, env, nowSeconds());
+  if (!session.ok) return problem("unauthorized", request);
+  const { sid, exp } = session.payload;
+  if (name !== AGENT_ALIAS && name !== sid)
+    return problem("forbidden", request);
+
+  const upgrade = isWebSocketUpgrade(request);
+  if (upgrade) {
+    if (rest.length > 0) return problem("not-found", request);
+    const { success } = await env.CONNECT_LIMITER.limit({ key: sid });
+    if (!success) return problem("rate-limited", request);
+  } else {
+    if (request.method !== "GET") return problem("method-not-allowed", request);
+    if (rest.join("/") !== "get-messages") return problem("not-found", request);
+  }
+
+  const target = new URL(url);
+  target.pathname = ["", "agents", AGENT_CLASS, sid, ...rest].join("/");
+  target.searchParams.delete(SESSION_EXP_PARAM);
+  if (upgrade) target.searchParams.set(SESSION_EXP_PARAM, String(exp));
+
+  const res = await routeAgentRequest(new Request(target, request), env);
+  if (!res) return problem("not-found", request);
+  if (upgrade) return res;
+
+  const headers = new Headers(res.headers);
+  headers.set("cache-control", NO_STORE);
+  return new Response(res.body, { status: res.status, headers });
+}

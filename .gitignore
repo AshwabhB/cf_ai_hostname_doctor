@@ -148,3 +148,6 @@ dist
 
 # Spike A run output (numbers are recorded in docs/BUILD_LOG.md)
 spikes/a-tool-calls/last-run-*.json
+
+# Local Claude Code config
+.claude/

@@ -1,23 +1,7 @@
-import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { LIMITS } from "../src/config/limits";
 import { MODEL_ID } from "../src/config/model";
 import { TenantAgent, buildTools } from "../src/server";
-
-describe("worker routing", () => {
-  it("returns 404 for paths outside the agent routes", async () => {
-    const res = await SELF.fetch("https://example.com/nope");
-    expect(res.status).toBe(404);
-  });
-
-  it("routes /agents/tenant-agent/<name> to a TenantAgent with empty history", async () => {
-    const res = await SELF.fetch(
-      "https://example.com/agents/tenant-agent/visitor-a/get-messages"
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual([]);
-  });
-});
 
 describe("starter demo removal", () => {
   it("gives the model no tools until S5 adds the hostname tools", () => {

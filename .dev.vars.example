@@ -1,3 +1,10 @@
 # Copy to .dev.vars for local secrets. Never commit .dev.vars.
-# S1 needs no secrets. Workers AI uses your `wrangler login` session.
-# S2 adds the visitor cookie signing secret here.
+# Workers AI uses your `wrangler login` session.
+
+# HMAC key for the hd_sid session cookie. At least 32 characters.
+# Generate one without printing it, for example:
+#   node -e 'require("fs").appendFileSync(".dev.vars","SESSION_SECRET="+require("crypto").randomBytes(48).toString("base64url")+"\n")'
+SESSION_SECRET=
+
+# Local dev only: drops the __Host- cookie prefix.
+COOKIE_DEV_MODE=true

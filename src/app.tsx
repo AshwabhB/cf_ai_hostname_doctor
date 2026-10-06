@@ -4,6 +4,11 @@ import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { TenantAgent } from "./server";
 import {
+  AGENT_ALIAS,
+  SESSION_EXPIRED_CLOSE,
+  SESSION_PATH
+} from "./config/protocol";
+import {
   Badge,
   Button,
   Empty,
@@ -29,38 +34,8 @@ import {
   XCircleIcon,
   BrainIcon,
   CaretDownIcon,
-  BugIcon,
-  XIcon,
-  PaperclipIcon,
-  ImageIcon
+  BugIcon
 } from "@phosphor-icons/react";
-
-// ── Attachment helpers ────────────────────────────────────────────────
-
-interface Attachment {
-  id: string;
-  file: File;
-  preview: string;
-  mediaType: string;
-}
-
-function createAttachment(file: File): Attachment {
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    file,
-    preview: URL.createObjectURL(file),
-    mediaType: file.type || "application/octet-stream"
-  };
-}
-
-function fileToDataUri(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
 
 // ── Small components ──────────────────────────────────────────────────
 
@@ -258,16 +233,20 @@ function Chat() {
   const [connected, setConnected] = useState(false);
   const [input, setInput] = useState("");
   const [showDebug, setShowDebug] = useState(false);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [isDragging, setIsDragging] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const agent = useAgent<TenantAgent>({
     agent: "TenantAgent",
+    // The server maps this alias to the visitor's own agent from the session cookie.
+    name: AGENT_ALIAS,
     onOpen: useCallback(() => setConnected(true), []),
-    onClose: useCallback(() => setConnected(false), []),
+    onClose: useCallback((event: CloseEvent) => {
+      setConnected(false);
+      // An expired session closes the socket. Renew the cookie so the automatic
+      // reconnect succeeds.
+      if (event.code === SESSION_EXPIRED_CLOSE) void refreshSession();
+    }, []),
     onError: useCallback(
       (error: Event) => console.error("WebSocket error:", error),
       []
@@ -283,7 +262,13 @@ function Chat() {
     status
   } = useAgentChat({
     agent,
-    experimental_throttle: 100
+    experimental_throttle: 100,
+    // History lives on the server. The client sends only the new message and never
+    // pushes its own copy of the conversation.
+    syncMessagesToServer: false,
+    prepareSendMessagesRequest: ({ messages }) => ({
+      body: { messages: messages.slice(-1) }
+    })
   });
 
   const isStreaming = status === "streaming" || status === "submitted";
@@ -299,102 +284,16 @@ function Chat() {
     }
   }, [isStreaming]);
 
-  const addFiles = useCallback((files: FileList | File[]) => {
-    const images = Array.from(files).filter((f) => f.type.startsWith("image/"));
-    if (images.length === 0) return;
-    setAttachments((prev) => [...prev, ...images.map(createAttachment)]);
-  }, []);
-
-  const removeAttachment = useCallback((id: string) => {
-    setAttachments((prev) => {
-      const att = prev.find((a) => a.id === id);
-      if (att) URL.revokeObjectURL(att.preview);
-      return prev.filter((a) => a.id !== id);
-    });
-  }, []);
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.dataTransfer.types.includes("Files")) setIsDragging(true);
-  }, []);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.currentTarget === e.target) setIsDragging(false);
-  }, []);
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setIsDragging(false);
-      if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
-    },
-    [addFiles]
-  );
-
-  const handlePaste = useCallback(
-    (e: React.ClipboardEvent) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      const files: File[] = [];
-      for (const item of items) {
-        if (item.kind === "file") {
-          const file = item.getAsFile();
-          if (file) files.push(file);
-        }
-      }
-      if (files.length > 0) {
-        e.preventDefault();
-        addFiles(files);
-      }
-    },
-    [addFiles]
-  );
-
   const send = useCallback(async () => {
     const text = input.trim();
-    if ((!text && attachments.length === 0) || isStreaming) return;
+    if (!text || isStreaming) return;
     setInput("");
-
-    const parts: Array<
-      | { type: "text"; text: string }
-      | { type: "file"; mediaType: string; url: string }
-    > = [];
-    if (text) parts.push({ type: "text", text });
-
-    for (const att of attachments) {
-      const dataUri = await fileToDataUri(att.file);
-      parts.push({ type: "file", mediaType: att.mediaType, url: dataUri });
-    }
-
-    for (const att of attachments) URL.revokeObjectURL(att.preview);
-    setAttachments([]);
-
-    sendMessage({ role: "user", parts });
+    sendMessage({ role: "user", parts: [{ type: "text", text }] });
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [input, attachments, isStreaming, sendMessage]);
+  }, [input, isStreaming, sendMessage]);
 
   return (
-    <div
-      className="flex flex-col h-screen bg-kumo-elevated relative"
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
-      {isDragging && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-kumo-elevated/80 backdrop-blur-sm border-2 border-dashed border-kumo-brand rounded-xl m-2 pointer-events-none">
-          <div className="flex flex-col items-center gap-2 text-kumo-brand">
-            <ImageIcon size={40} />
-            <Text variant="heading3" as="span">
-              Drop images here
-            </Text>
-          </div>
-        </div>
-      )}
-
+    <div className="flex flex-col h-screen bg-kumo-elevated relative">
       {/* Header */}
       <header className="px-5 py-4 bg-kumo-base border-b border-kumo-line">
         <div className="max-w-3xl mx-auto flex items-center justify-between">
@@ -575,55 +474,7 @@ function Chat() {
           }}
           className="max-w-3xl mx-auto px-5 py-4"
         >
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept="image/*"
-            aria-label="Upload image attachments"
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files) addFiles(e.target.files);
-              e.target.value = "";
-            }}
-          />
-
-          {attachments.length > 0 && (
-            <div className="flex gap-2 mb-2 flex-wrap">
-              {attachments.map((att) => (
-                <div
-                  key={att.id}
-                  className="relative group rounded-lg border border-kumo-line bg-kumo-control overflow-hidden"
-                >
-                  <img
-                    src={att.preview}
-                    alt={att.file.name}
-                    className="h-16 w-16 object-cover"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeAttachment(att.id)}
-                    className="absolute top-0.5 right-0.5 rounded-full bg-kumo-contrast/80 text-kumo-inverse p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                    aria-label={`Remove ${att.file.name}`}
-                  >
-                    <XIcon size={10} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
           <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm focus-within:ring-2 focus-within:ring-kumo-ring focus-within:border-transparent transition-shadow">
-            <Button
-              type="button"
-              variant="ghost"
-              shape="square"
-              aria-label="Attach images"
-              icon={<PaperclipIcon size={18} />}
-              onClick={() => fileInputRef.current?.click()}
-              disabled={!connected || isStreaming}
-              className="mb-0.5"
-            />
             <InputArea
               ref={textareaRef}
               value={input}
@@ -639,12 +490,7 @@ function Chat() {
                 el.style.height = "auto";
                 el.style.height = `${el.scrollHeight}px`;
               }}
-              onPaste={handlePaste}
-              placeholder={
-                attachments.length > 0
-                  ? "Add a message or send images..."
-                  : "Send a message..."
-              }
+              placeholder="Send a message..."
               disabled={!connected || isStreaming}
               rows={1}
               className="flex-1 ring-0! focus:ring-0! shadow-none! bg-transparent! outline-none! resize-none max-h-40"
@@ -665,9 +511,7 @@ function Chat() {
                 variant="primary"
                 shape="square"
                 aria-label="Send message"
-                disabled={
-                  (!input.trim() && attachments.length === 0) || !connected
-                }
+                disabled={!input.trim() || !connected}
                 icon={<PaperPlaneRightIcon size={18} />}
                 className="mb-0.5"
               />
@@ -682,16 +526,51 @@ function Chat() {
   );
 }
 
+// Creates or renews the hd_sid cookie. The socket needs it before it connects.
+async function refreshSession(): Promise<boolean> {
+  try {
+    const res = await fetch(SESSION_PATH, {
+      credentials: "same-origin",
+      cache: "no-store"
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+function useSession(): "loading" | "ready" | "failed" {
+  const [status, setStatus] = useState<"loading" | "ready" | "failed">(
+    "loading"
+  );
+  useEffect(() => {
+    let active = true;
+    void refreshSession().then((ok) => {
+      if (active) setStatus(ok ? "ready" : "failed");
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  return status;
+}
+
 export default function App() {
+  const session = useSession();
+  const fallback = (text: string) => (
+    <div className="flex items-center justify-center h-screen text-kumo-inactive">
+      {text}
+    </div>
+  );
+  if (session === "loading") return fallback("Loading...");
+  if (session === "failed") {
+    return fallback(
+      "Could not start a session. Refresh the page to try again."
+    );
+  }
   return (
     <Toasty>
-      <Suspense
-        fallback={
-          <div className="flex items-center justify-center h-screen text-kumo-inactive">
-            Loading...
-          </div>
-        }
-      >
+      <Suspense fallback={fallback("Loading...")}>
         <Chat />
       </Suspense>
     </Toasty>
