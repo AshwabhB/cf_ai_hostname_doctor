@@ -30,18 +30,30 @@ export const LIMITS = {
     // One turn per visitor. The lease expires on its own only as a backstop.
     leaseMs: 60_000,
     // explain_findings runs a fresh DNS check when the saved one is older than this.
-    findingsFreshMs: 5 * 60 * 1000
+    findingsFreshMs: 5 * 60 * 1000,
+    // Model turns per visitor per UTC day, shared by all of the visitor's sockets.
+    turnsPerVisitorPerDay: 30,
+    // Longest hostname a tool accepts from the model, before normalization.
+    toolHostnameMaxChars: 300,
+    // Hostnames listed in the summary written when the step cap ends a turn.
+    stepCapSummaryRows: 10
   },
   session: {
     ttlSeconds: 30 * DAY_SECONDS,
     // The cookie is reissued when less than this much lifetime is left.
-    renewWithinSeconds: 7 * DAY_SECONDS
+    renewWithinSeconds: 7 * DAY_SECONDS,
+    // Random bytes in a session id (128 bits).
+    sidBytes: 16,
+    // Shortest SESSION_SECRET accepted for signing cookies.
+    minSecretChars: 32
   },
   hostnames: {
     // Live (not deleted) hostnames one visitor may hold.
     maxPerVisitor: 25,
     // Raw input longer than this is rejected before any IDNA work.
-    maxInputChars: 1024
+    maxInputChars: 1024,
+    // Random bytes in a TXT verification token (128 bits).
+    verifyTokenBytes: 16
   },
   idempotency: {
     ttlSeconds: 24 * 60 * 60,
@@ -51,10 +63,16 @@ export const LIMITS = {
   },
   paging: {
     defaultLimit: 20,
-    maxLimit: 50
+    maxLimit: 50,
+    // Longest cursor accepted back from a client.
+    maxCursorChars: 200
   },
   dns: {
     timeoutMs: 3000,
+    // Retries per lookup, on a network error or 5xx only.
+    retries: 1,
+    // Longest name accepted in a DoH answer.
+    maxAnswerNameChars: 300,
     // One retry on a network error or 5xx, after a random pause in this range.
     retryJitterMinMs: 200,
     retryJitterMaxMs: 500,
@@ -100,7 +118,29 @@ export const LIMITS = {
     maxFrameBytes: 32 * 1024,
     // Per-connection token bucket for incoming frames.
     frameBurst: 20,
-    frameRefillPerSecond: 2
+    frameRefillPerSecond: 2,
+    // Open sockets per visitor. One more is accepted, then closed with 4429.
+    maxSocketsPerVisitor: 3,
+    // Frame schema caps: message and RPC ids, the ETag a callable takes, parts in one
+    // user message, and RPC method names.
+    maxIdChars: 64,
+    maxEtagChars: 128,
+    maxMessageParts: 8,
+    maxMethodChars: 64
+  },
+  ui: {
+    // How often the chat re-renders while a reply streams.
+    chatThrottleMs: 100,
+    // How long a copy button shows its check mark.
+    copiedFeedbackMs: 1500
+  },
+  logs: {
+    // Longest string value a log line keeps. Longer values are cut.
+    maxStringChars: 120,
+    // Most items kept from a list value, such as finding codes.
+    maxListItems: 10,
+    // Hex characters kept from the visitor's HMAC, enough to tell visitors apart.
+    visitorHashChars: 16
   },
   // These mirror the ratelimits in wrangler.jsonc, which Wrangler needs as literals.
   // A unit test fails if the two drift apart.

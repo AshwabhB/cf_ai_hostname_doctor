@@ -22,6 +22,10 @@ export default defineConfig({
   ],
   test: {
     include: ["test/**/*.test.ts"],
-    setupFiles: ["./test/setup.ts"]
+    setupFiles: ["./test/setup.ts"],
+    // The app's structured log lines are checked in test/logs.test.ts. Everywhere else
+    // they would only fill the output, so they are dropped. Other output still shows.
+    onConsoleLog: (line) =>
+      line.startsWith('{"') && line.includes('"event":') ? false : undefined
   }
 });

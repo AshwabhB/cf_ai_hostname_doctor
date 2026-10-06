@@ -5,6 +5,7 @@ import type { Diagnosis } from "../dns/diagnose";
 import type { Finding } from "../dns/rules";
 import type { HostnameState } from "./state-machine";
 import type { Result } from "./service";
+import { dnsCheckFields, elapsedMs, log } from "../observability/log";
 
 const ID_PATTERN = /^hn_[0-9a-f]{24}$/;
 const HOUR_MS = 60 * 60 * 1000;
@@ -147,9 +148,15 @@ export class DiagnosisService {
     if (!this.takeCheckSlot(this.deps.now()))
       return { ok: false, error: "rate-limited" };
 
+    const start = Date.now();
     const result = await this.deps.diagnose({
       hostname: row.hostname,
       token: row.verify_token
+    });
+    log("dns_check", {
+      ...dnsCheckFields(result),
+      hostname_id: id,
+      latency_ms: elapsedMs(start)
     });
 
     // The row may have been deleted while DNS was in flight. save() only writes onto

@@ -328,3 +328,24 @@ describe("security headers", () => {
     }
   });
 });
+
+describe("GET /healthz", () => {
+  it("answers ok with no session, no model call and nothing about the account", async () => {
+    const spy = spyOnModel();
+    const res = await SELF.fetch(`${BASE}/healthz`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ok" });
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("allows only GET", async () => {
+    const res = await SELF.fetch(`${BASE}/healthz`, {
+      method: "POST",
+      headers: { origin: ORIGIN }
+    });
+    expect(res.status).toBe(405);
+  });
+});

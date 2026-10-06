@@ -206,6 +206,10 @@ describe("schedule", () => {
 
 describe("happy path", () => {
   it("goes pending, verified, active with a simulated certificate and the registry claim", async () => {
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
     const introspector = await skipSleeps();
     try {
       const v = await visitor();
@@ -234,6 +238,40 @@ describe("happy path", () => {
       const [instance] = await introspector.get();
       await instance.waitForStatus("complete");
       expect(await instance.getOutput()).toEqual({ outcome: "active" });
+
+      // Each step logs once, under the run's id, and the transitions it causes match it.
+      // Neither the instance id (it holds the sid) nor the TXT value appears.
+      const lines = logged
+        .filter((l) => l.startsWith('{"'))
+        .map((l) => JSON.parse(l) as Record<string, unknown>);
+      const run = `${h.id}-g${h.generation}-r1`;
+      const steps = lines
+        .filter((l) => l.event === "workflow_step")
+        .map((l) => [l.step, l.outcome, l.correlation_id]);
+      expect(steps).toEqual(
+        expect.arrayContaining(
+          ["load", "record", "claim", "settle", "activate"].map((s) => [
+            s,
+            "ok",
+            run
+          ])
+        )
+      );
+      expect(
+        lines.find((l) => l.event === "dns_check" && l.outcome === "verifiable")
+      ).toMatchObject({ hostname_id: h.id, correlation_id: run });
+      expect(
+        lines
+          .filter((l) => l.event === "transition" && l.actor === "system")
+          .map((l) => [l.to_state, l.correlation_id])
+      ).toEqual([
+        ["verified", run],
+        ["active", run]
+      ]);
+      for (const l of logged) {
+        expect(l).not.toContain(h.verification.txt_value);
+        expect(l).not.toContain(v.payload.sid);
+      }
     } finally {
       await settle(introspector);
     }

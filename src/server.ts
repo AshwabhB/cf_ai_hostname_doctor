@@ -6,9 +6,14 @@ import {
 import { callable, type Connection, type WSMessage } from "agents";
 import { readSummaries, type HostnameSummary } from "./ai/context";
 import { TurnLease } from "./ai/lease";
-import { runTurn } from "./ai/turn";
+import { TurnQuota } from "./ai/quota";
+import { killSwitchOn, runTurn } from "./ai/turn";
 import { LIMITS } from "./config/limits";
-import { SESSION_EXPIRED_CLOSE } from "./config/protocol";
+import {
+  SESSION_EXPIRED_CLOSE,
+  TOO_MANY_SOCKETS_CLOSE,
+  type HdErrorFrame
+} from "./config/protocol";
 import { SqlDnsCache } from "./dns/cache";
 import { diagnose } from "./dns/diagnose";
 import { DohClient, defaultDohDeps } from "./dns/doh";
@@ -25,14 +30,27 @@ import {
 } from "./hostnames/service";
 import { SESSION_EXP_PARAM, handleRequest } from "./router";
 import {
+  log,
+  visitorHash,
+  withLogContext,
+  type LogContext
+} from "./observability/log";
+import {
   FrameRateLimiter,
   checkFrame,
   rebuildChatRequest,
   utf8Length
 } from "./security/frames";
 
-function sendError(connection: Connection, status: number, title: string) {
-  connection.send(JSON.stringify({ type: "hd_error", status, title }));
+function sendError(
+  connection: Connection,
+  status: number,
+  title: string,
+  retryAfter?: number
+) {
+  const frame: HdErrorFrame = { type: "hd_error", status, title };
+  if (retryAfter !== undefined) frame.retry_after = retryAfter;
+  connection.send(JSON.stringify(frame));
 }
 
 // Pushed to the visitor's own sockets with server setState after every change.
@@ -55,6 +73,8 @@ export class TenantAgent extends AIChatAgent<Env, TenantState> {
   private _hostnames: HostnameService | null = null;
   private _diagnoses: DiagnosisService | null = null;
   private _hostnameLifecycle: HostnameLifecycle | null = null;
+  // Keyed hash of this visitor's sid for log lines. Set in onStart.
+  private visitorId: string | undefined;
   // Time limits for one model call. A field so tests can shorten them.
   chatTimeouts: { firstChunkMs: number; totalMs: number } = {
     firstChunkMs: LIMITS.chat.firstTokenMs,
@@ -68,11 +88,34 @@ export class TenantAgent extends AIChatAgent<Env, TenantState> {
     const sdkOnMessage = this.onMessage.bind(this);
     this.onMessage = (connection, message) =>
       this.guardFrame(connection, message, sdkOnMessage);
+    // Counted from the SDK's connections, which come from the runtime's socket list and
+    // so survive hibernation. The new socket is already accepted here, so one past the
+    // limit is closed with 4429 and the browser stops reconnecting.
+    const sdkOnConnect = this.onConnect.bind(this);
+    this.onConnect = (connection, ctx) => {
+      if (
+        this.openSocketsBesides(connection) >= LIMITS.ws.maxSocketsPerVisitor
+      ) {
+        connection.close(TOO_MANY_SOCKETS_CLOSE, "too many open tabs");
+        return;
+      }
+      return sdkOnConnect(connection, ctx);
+    };
     const sdkOnClose = this.onClose.bind(this);
     this.onClose = (connection, code, reason, wasClean) => {
       this.frameLimiter.forget(connection.id);
       return sdkOnClose(connection, code, reason, wasClean);
     };
+  }
+
+  // Open sockets other than this one. A tab that reconnects reuses its connection id,
+  // so a stale socket of the same tab is not counted against it.
+  private openSocketsBesides(connection: Connection): number {
+    let count = 0;
+    for (const other of this.getConnections()) {
+      if (other.id !== connection.id) count++;
+    }
+    return count;
   }
 
   private async guardFrame(
@@ -122,15 +165,36 @@ export class TenantAgent extends AIChatAgent<Env, TenantState> {
           sendError(connection, 409, "a reply is already in progress");
           return;
         }
+        // Taken before any model call, and counted per visitor across all sockets. With
+        // the kill switch on no model runs, so no turn is used.
+        if (!killSwitchOn(this.env)) {
+          const quota = new TurnQuota(this.ctx.storage).take(Date.now());
+          if (!quota.ok) {
+            lease.release(verdict.requestId);
+            this.traced(undefined, () =>
+              log("model_call", { outcome: "quota_exceeded", latency_ms: 0 })
+            );
+            sendError(
+              connection,
+              429,
+              "daily chat limit reached",
+              quota.retryAfterSeconds
+            );
+            return;
+          }
+        }
         // The SDK handler resolves when the turn is over, however it ended.
         // onChatResponse releases too, and the expiry is only a backstop.
+        // The turn's own id, not the browser's request id, ties its log lines together.
         try {
-          return await next(
-            connection,
-            rebuildChatRequest(
-              verdict.requestId,
-              this.messages,
-              verdict.message
+          return await this.traced(undefined, () =>
+            next(
+              connection,
+              rebuildChatRequest(
+                verdict.requestId,
+                this.messages,
+                verdict.message
+              )
             )
           );
         } finally {
@@ -144,12 +208,23 @@ export class TenantAgent extends AIChatAgent<Env, TenantState> {
 
   async onStart(props?: object) {
     await super.onStart(props);
+    this.visitorId = await visitorHash(this.env.SESSION_SECRET, this.name);
     this.ensureSchema();
     // The last pushed state is persisted. Rebuild it on start so clients never get a
     // copy shaped by older code or missing rows changed while the agent slept.
     this.publishState();
     // Reconcile on start, in the background so the first request is not held up.
     this.ctx.waitUntil(this.reconcile());
+  }
+
+  // Runs fn with this visitor and a correlation id on every log line it causes. A caller
+  // inside our own code may pass its id, so one REST call or workflow run reads as one.
+  private traced<T>(correlationId: string | undefined, fn: () => T): T {
+    const ctx: LogContext = {
+      visitor: this.visitorId,
+      correlation_id: correlationId ?? crypto.randomUUID()
+    };
+    return withLogContext(ctx, fn);
   }
 
   private ensureSchema() {
@@ -233,7 +308,9 @@ export class TenantAgent extends AIChatAgent<Env, TenantState> {
 
   async reconcile() {
     this.ensureSchema();
-    const report = await this.hostnameLifecycle.reconcile();
+    const report = await this.traced(undefined, () =>
+      this.hostnameLifecycle.reconcile()
+    );
     if (this.hostnames.reconcileRows().length === 0) {
       for (const schedule of this.getSchedules()) {
         if (schedule.callback === "reconcile")
@@ -263,22 +340,43 @@ export class TenantAgent extends AIChatAgent<Env, TenantState> {
     generation: number,
     diagnosis: Diagnosis & { checkedAt: number }
   ) {
-    const result = this.hostnameLifecycle.record(hostnameId, generation, diagnosis);
+    const result = this.hostnameLifecycle.record(
+      hostnameId,
+      generation,
+      diagnosis
+    );
     // New findings change the table's "checked" time and codes, so push them too.
     this.publishState();
     return result;
   }
 
-  wfGiveUp(hostnameId: string, generation: number) {
-    return this.hostnameLifecycle.giveUp(hostnameId, generation);
+  // The workflow passes its run id as the correlation id.
+  wfGiveUp(hostnameId: string, generation: number, correlationId?: string) {
+    return this.traced(correlationId, () =>
+      this.hostnameLifecycle.giveUp(hostnameId, generation)
+    );
   }
 
-  wfSettle(hostnameId: string, generation: number, granted: boolean) {
-    return this.hostnameLifecycle.settle(hostnameId, generation, granted);
+  wfSettle(
+    hostnameId: string,
+    generation: number,
+    granted: boolean,
+    correlationId?: string
+  ) {
+    return this.traced(correlationId, () =>
+      this.hostnameLifecycle.settle(hostnameId, generation, granted)
+    );
   }
 
-  wfActivate(hostnameId: string, generation: number, issuedAtMs: number) {
-    return this.hostnameLifecycle.activate(hostnameId, generation, issuedAtMs);
+  wfActivate(
+    hostnameId: string,
+    generation: number,
+    issuedAtMs: number,
+    correlationId?: string
+  ) {
+    return this.traced(correlationId, () =>
+      this.hostnameLifecycle.activate(hostnameId, generation, issuedAtMs)
+    );
   }
 
   private get diagnoses(): DiagnosisService {
@@ -312,22 +410,27 @@ export class TenantAgent extends AIChatAgent<Env, TenantState> {
     return this.hostnames.events(id, { limit, cursor });
   }
 
-  apiCreate(input: CreateInput) {
-    return this.hostnames.create(input);
+  // Writes take the Worker's correlation id, so a request and its transitions match.
+  apiCreate(input: CreateInput, correlationId?: string) {
+    return this.traced(correlationId, () => this.hostnames.create(input));
   }
 
-  apiDelete(id: string, etag: string) {
-    return this.hostnameLifecycle.delete(id, etag);
+  apiDelete(id: string, etag: string, correlationId?: string) {
+    return this.traced(correlationId, () =>
+      this.hostnameLifecycle.delete(id, etag)
+    );
   }
 
-  apiRetry(id: string) {
-    return this.hostnames.retry(id, "user");
+  apiRetry(id: string, correlationId?: string) {
+    return this.traced(correlationId, () => this.hostnames.retry(id, "user"));
   }
 
-  async apiCheck(id: string) {
-    const result = await this.diagnoses.check(id);
-    if (result.ok) this.publishState();
-    return result;
+  apiCheck(id: string, correlationId?: string) {
+    return this.traced(correlationId, async () => {
+      const result = await this.diagnoses.check(id);
+      if (result.ok) this.publishState();
+      return result;
+    });
   }
 
   apiDiagnosis(id: string) {
@@ -340,13 +443,15 @@ export class TenantAgent extends AIChatAgent<Env, TenantState> {
     id: string,
     etag: string
   ): Promise<Result<{ hostname: HostnameView }>> {
-    return this.hostnameLifecycle.delete(id, etag);
+    return this.traced(undefined, () =>
+      this.hostnameLifecycle.delete(id, etag)
+    );
   }
 
   // Named retryHostname because Agent already has a retry() helper.
   @callable()
   retryHostname(id: string): Promise<Result<{ hostname: HostnameView }>> {
-    return this.hostnames.retry(id, "user");
+    return this.traced(undefined, () => this.hostnames.retry(id, "user"));
   }
 
   // State only ever changes on the server.

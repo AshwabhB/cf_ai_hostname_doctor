@@ -35,7 +35,7 @@ const DohResponse = z.object({
   Answer: z
     .array(
       z.object({
-        name: z.string().max(300),
+        name: z.string().max(LIMITS.dns.maxAnswerNameChars),
         type: z.number().int(),
         TTL: z.number().int().nonnegative(),
         data: z.string().max(LIMITS.dns.maxResponseBytes)
@@ -138,7 +138,7 @@ export class DohClient {
     name: string,
     type: RecordType
   ): Promise<{ value: LookupResult; ttlHint: number | null }> {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt <= LIMITS.dns.retries; attempt++) {
       if (attempt > 0) {
         const { retryJitterMinMs: min, retryJitterMaxMs: max } = LIMITS.dns;
         await this.deps.sleep(

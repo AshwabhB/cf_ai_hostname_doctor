@@ -26,7 +26,8 @@ import {
 import { modelFactory } from "./model";
 import { SYSTEM_PROMPT } from "./prompts/system.v1";
 import { buildTools } from "./tools";
-import { withFirstTokenRetry } from "./first-token";
+import { FirstTokenTimeoutError, withFirstTokenRetry } from "./first-token";
+import { elapsedMs, log } from "../observability/log";
 
 export const KILL_SWITCH_MESSAGE =
   "The assistant is paused right now. Your hostnames keep working, and you can still manage them in the app.";
@@ -87,7 +88,7 @@ export function countInvalidToolCalls(
 // Written from SQL when the step cap ends a turn, so the user still gets an answer.
 export function stepCapSummary(summaries: HostnameSummary[]): string {
   const lines = summaries
-    .slice(0, 10)
+    .slice(0, LIMITS.chat.stepCapSummaryRows)
     .map(
       (h) =>
         `- ${h.display_hostname}: ${h.state}${h.finding_codes.length ? ` (${h.finding_codes.join(", ")})` : ""}`
@@ -99,10 +100,34 @@ export function stepCapSummary(summaries: HostnameSummary[]): string {
   ].join("\n");
 }
 
+// A plain var, so it can be flipped in the dashboard without a code change.
+export function killSwitchOn(env: Env): boolean {
+  return String(env.AI_KILL_SWITCH) === "true";
+}
+
+// Model output that counts as the first token: text, reasoning or a tool call starting.
+const FIRST_TOKEN_CHUNKS = new Set([
+  "text-delta",
+  "reasoning-delta",
+  "tool-input-start",
+  "tool-call"
+]);
+
+// A short, fixed name for why a model call failed. Error text is never logged.
+export function modelErrorClass(error: unknown, aborted: boolean): string {
+  if (aborted) return "aborted";
+  if (error instanceof FirstTokenTimeoutError) return "first_token_timeout";
+  const e = error as { name?: unknown; statusCode?: unknown } | null;
+  if (typeof e?.statusCode === "number") return `upstream_${e.statusCode}`;
+  if (e?.name === "TimeoutError" || e?.name === "AbortError") return "timeout";
+  return "error";
+}
+
 export async function runTurn(deps: TurnDeps): Promise<Response> {
-  // A plain var, so it can be flipped in the dashboard without a deploy.
-  if (String(deps.env.AI_KILL_SWITCH) === "true")
+  if (killSwitchOn(deps.env)) {
+    log("model_call", { outcome: "kill_switch", latency_ms: 0 });
     return fixedReply(KILL_SWITCH_MESSAGE);
+  }
 
   const fallbackOrigin = deps.env.FALLBACK_ORIGIN;
   const system = `${SYSTEM_PROMPT}\n\n${buildStateBlock(
@@ -138,6 +163,9 @@ export async function runTurn(deps: TurnDeps): Promise<Response> {
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
+      const start = Date.now();
+      let firstTokenMs: number | null = null;
+      let failure: unknown;
       const result = streamText({
         model,
         system,
@@ -153,23 +181,54 @@ export async function runTurn(deps: TurnDeps): Promise<Response> {
         // First-token timeouts and the one retry live in withFirstTokenRetry.
         timeout: { totalMs: deps.timeouts.totalMs },
         maxRetries: 0,
-        abortSignal: deps.abortSignal
+        abortSignal: deps.abortSignal,
+        onChunk: ({ chunk }) => {
+          if (firstTokenMs === null && FIRST_TOKEN_CHUNKS.has(chunk.type))
+            firstTokenMs = elapsedMs(start);
+        },
+        onError: ({ error }) => {
+          failure ??= error;
+        }
       });
       writer.merge(result.toUIMessageStream({ sendFinish: false }));
 
-      const steps = (await result.steps) as ReadonlyArray<StepResult<ToolSet>>;
+      let steps: ReadonlyArray<StepResult<ToolSet>>;
+      try {
+        steps = (await result.steps) as ReadonlyArray<StepResult<ToolSet>>;
+      } catch (e) {
+        log("model_call", {
+          outcome: modelErrorClass(
+            failure ?? e,
+            deps.abortSignal?.aborted === true
+          ),
+          first_token_ms: firstTokenMs,
+          latency_ms: elapsedMs(start)
+        });
+        throw e;
+      }
       const last = steps.at(-1);
+      let outcome = failure
+        ? modelErrorClass(failure, deps.abortSignal?.aborted === true)
+        : "ok";
       if (tooManyInvalid(steps)) {
+        outcome = "invalid_tool_calls";
         writeText(writer, INVALID_TOOL_MESSAGE);
       } else if (
         steps.length >= LIMITS.chat.maxSteps &&
         last?.finishReason === "tool-calls"
       ) {
+        outcome = "step_cap";
         writeText(
           writer,
           stepCapSummary(readSummaries(deps.storage.sql, fallbackOrigin))
         );
       }
+      log("model_call", {
+        outcome,
+        steps: steps.length,
+        first_token_ms: firstTokenMs,
+        latency_ms: elapsedMs(start)
+      });
       writer.write({ type: "finish" });
     }
   });

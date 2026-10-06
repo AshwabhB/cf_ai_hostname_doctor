@@ -3,6 +3,7 @@
 import { getAgentByName } from "agents";
 import { z } from "zod";
 import { LIMITS } from "../config/limits";
+import { currentLogContext } from "../observability/log";
 import type { Result, ServiceError } from "../hostnames/service";
 import {
   BodyTooLargeError,
@@ -24,7 +25,7 @@ const ListQuery = z
       .regex(/^[1-9][0-9]{0,2}$/)
       .transform(Number)
       .optional(),
-    cursor: z.string().min(1).max(200).optional()
+    cursor: z.string().min(1).max(LIMITS.paging.maxCursorChars).optional()
   })
   .strict();
 
@@ -71,6 +72,9 @@ async function sha256Hex(text: string): Promise<string> {
 }
 
 type Unwrapped<T> = Result<T>;
+
+// Set by the router for every REST call. Writes pass it on to the agent.
+const correlationId = () => currentLogContext().correlation_id;
 
 export async function handleHostnames(
   request: Request,
@@ -133,7 +137,7 @@ export async function handleHostnames(
           request,
           "Send If-Match with the hostname's ETag."
         );
-      const result = await agent.apiDelete(id, ifMatch);
+      const result = await agent.apiDelete(id, ifMatch, correlationId());
       return result.ok
         ? json(result.hostname, 202, { etag: result.hostname.etag })
         : fromServiceError(result, request);
@@ -154,7 +158,7 @@ export async function handleHostnames(
 
   if (sub === "check") {
     if (method !== "POST") return problem("method-not-allowed", request);
-    const result = await agent.apiCheck(id);
+    const result = await agent.apiCheck(id, correlationId());
     return result.ok
       ? json(result.diagnosis, 200, { etag: result.diagnosis.etag })
       : fromServiceError(result, request);
@@ -179,7 +183,7 @@ export async function handleHostnames(
 
   if (sub === "retry") {
     if (method !== "POST") return problem("method-not-allowed", request);
-    const result = await agent.apiRetry(id);
+    const result = await agent.apiRetry(id, correlationId());
     return result.ok
       ? json(result.hostname, 200, { etag: result.hostname.etag })
       : fromServiceError(result, request);
@@ -236,12 +240,15 @@ async function create(
       'Body must be { "hostname": string }.'
     );
 
-  const result = await agent.apiCreate({
-    hostname: parsed.data.hostname,
-    idempotencyKey: key.data,
-    requestHash: await sha256Hex(JSON.stringify(parsed.data)),
-    actor: "user"
-  });
+  const result = await agent.apiCreate(
+    {
+      hostname: parsed.data.hostname,
+      idempotencyKey: key.data,
+      requestHash: await sha256Hex(JSON.stringify(parsed.data)),
+      actor: "user"
+    },
+    correlationId()
+  );
   if (!result.ok) return fromServiceError(result, request);
   const headers: Record<string, string> = {
     etag: result.hostname.etag,

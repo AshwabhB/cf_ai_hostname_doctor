@@ -227,3 +227,47 @@ path to Workers AI, was never called.
   React sets styles through the DOM, which `style-src 'self'` allows.
 - `vite dev` does not apply the assets' `_headers`, because Vite injects inline scripts
   in dev. The policy was checked under `vite preview` of the production build.
+
+## Quotas and socket limits
+
+- **Daily model turns.** Each visitor gets `LIMITS.chat.turnsPerVisitorPerDay` (30) turns
+  per UTC day. The turn is taken by one SQL statement in TenantAgent
+  (`INSERT ... ON CONFLICT DO UPDATE ... WHERE used < limit`), after the turn lease and
+  before any model call. It is per visitor, so every socket of theirs shares it. Over the
+  limit, the socket gets an `hd_error` frame with status 429 and `retry_after` (seconds
+  to the next UTC midnight), and no model is created. A turn refused with 409 for
+  overlapping, and a turn while the kill switch is on, use nothing.
+- **Sockets.** At most `LIMITS.ws.maxSocketsPerVisitor` (3) per visitor. A 4th is accepted
+  and then closed with code 4429, so the browser can show why and stop reconnecting.
+  Sockets are counted from the SDK's connections, which come from the runtime's socket
+  list and so survive hibernation. A tab that reconnects with its own connection id is not
+  counted twice.
+- **No stray limits.** Every numeric limit lives in `src/config/limits.ts`. A source rule
+  test fails on any other number in `src/`, except protocol facts (HTTP statuses, close
+  codes, DNS record types, RFC name lengths, time-unit factors) listed in the test with
+  the reason for each.
+
+## Logs
+
+- One JSON line per event: `api_request`, `transition`, `tool_call`, `model_call`,
+  `workflow_step` and `dns_check`. Fields: event, hashed visitor, hostname id, outcome,
+  latency, correlation id, plus a few enums (route template, state, tool, step).
+- Everything goes through `redact()` in `src/observability/log.ts`. It keeps only
+  allowlisted keys and scalar values, masks any 32+ character hex run (session ids, TXT
+  tokens), long base64 runs (signed cookies, keys) and any value naming a credential, and
+  cuts long strings.
+- Callers never pass prompts, model text, tool inputs or outputs, cookies, tokens, TXT
+  values, hostnames or raw paths. The masks are a second line of defence.
+- The visitor is an HMAC of the session id keyed with `SESSION_SECRET`, cut to 16 hex
+  characters, so a log reader cannot recover or guess the id. Rotating the secret changes
+  every visitor's hash.
+- The browser's chat request id is never logged; a server-made id ties a turn together.
+  Workflow instance ids contain the session id, so a run logs
+  `<hostname_id>-g<generation>-r<run>` instead.
+- Tested (unit): the redaction rules, and real REST, chat and workflow runs whose log
+  lines hold no session id, cookie, TXT value, user text or model text.
+
+## Health
+
+- `GET /healthz` returns `{"status":"ok"}` with `no-store`. No session, no model call,
+  nothing about the account, and it is not logged.

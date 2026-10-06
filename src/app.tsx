@@ -15,7 +15,9 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   AGENT_ALIAS,
   SESSION_EXPIRED_CLOSE,
-  SESSION_PATH
+  SESSION_PATH,
+  TOO_MANY_SOCKETS_CLOSE,
+  type HdErrorFrame
 } from "./config/protocol";
 import type { TenantAgent, TenantState } from "./server";
 import { ConfirmDelete, type DeleteTarget } from "./ui/ConfirmDelete";
@@ -23,6 +25,7 @@ import { HostnameDrawer } from "./ui/HostnameDrawer";
 import { HostnameTable, type HostnameRow } from "./ui/HostnameTable";
 import { Markdown } from "./ui/Markdown";
 import { ToolCard } from "./ui/ToolCard";
+import { LIMITS } from "./config/limits";
 
 const STARTER_PROMPTS = [
   "Add shop.example.com as a custom hostname",
@@ -63,22 +66,52 @@ function ThemeToggle() {
   );
 }
 
-type Connection = "connecting" | "connected" | "reconnecting";
+type Connection = "connecting" | "connected" | "reconnecting" | "too-many-tabs";
+
+const CONNECTION_LABEL: Record<Connection, string> = {
+  connected: "Connected",
+  connecting: "Connecting...",
+  reconnecting: "Reconnecting...",
+  "too-many-tabs": "Too many open tabs"
+};
+
+// Error frames from the agent, in words for the chat. Unknown ones use their title.
+function errorNotice(frame: HdErrorFrame): string {
+  if (frame.status === 429 && frame.retry_after !== undefined) {
+    const hours = Math.max(1, Math.round(frame.retry_after / 3600));
+    return `You've used today's chat turns. They reset in about ${hours} ${hours === 1 ? "hour" : "hours"}. The hostname table still works.`;
+  }
+  if (frame.status === 409) return "A reply is already in progress.";
+  return `That message was not sent: ${frame.title}.`;
+}
+
+function parseErrorFrame(data: unknown): HdErrorFrame | null {
+  if (typeof data !== "string" || !data.includes('"hd_error"')) return null;
+  try {
+    const frame = JSON.parse(data) as Partial<HdErrorFrame>;
+    return frame.type === "hd_error" &&
+      typeof frame.status === "number" &&
+      typeof frame.title === "string"
+      ? (frame as HdErrorFrame)
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 function ConnectionStatus({ state }: { state: Connection }) {
-  const label =
-    state === "connected"
-      ? "Connected"
-      : state === "connecting"
-        ? "Connecting..."
-        : "Reconnecting...";
+  const label = CONNECTION_LABEL[state];
   return (
     <output className="flex items-center gap-1.5" aria-live="polite">
       <CircleIcon
         size={8}
         weight="fill"
         className={
-          state === "connected" ? "text-kumo-success" : "text-kumo-warning"
+          state === "connected"
+            ? "text-kumo-success"
+            : state === "too-many-tabs"
+              ? "text-kumo-danger"
+              : "text-kumo-warning"
         }
       />
       {/* On phones a healthy connection shows only the dot, so the title has room.
@@ -131,6 +164,7 @@ function ChatPane({
   messages,
   status,
   connected,
+  notice,
   onSend,
   onStop,
   onDelete
@@ -138,6 +172,7 @@ function ChatPane({
   messages: UIMessage[];
   status: string;
   connected: boolean;
+  notice: string | null;
   onSend: (text: string) => void;
   onStop: () => void;
   onDelete: (t: DeleteTarget) => void;
@@ -207,6 +242,11 @@ function ChatPane({
         }}
         className="border-t border-kumo-line bg-kumo-base px-4 py-3"
       >
+        {notice && (
+          <output className="mx-auto mb-2 block max-w-3xl text-sm text-kumo-warning">
+            {notice}
+          </output>
+        )}
         <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-xl border border-kumo-line bg-kumo-base p-2 focus-within:ring-2 focus-within:ring-kumo-ring">
           <label htmlFor="chat-input" className="sr-only">
             Message
@@ -270,18 +310,37 @@ function Workspace() {
   const [tab, setTab] = useState("chat");
   const [open, setOpen] = useState<HostnameRow | null>(null);
   const [deleting, setDeleting] = useState<DeleteTarget | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // Set once useAgentChat exists. A refused message never gets a reply, so the
+  // pending send is stopped when its error frame arrives.
+  const stopRef = useRef<() => void>(() => {});
 
   const agent = useAgent<TenantAgent, TenantState>({
     agent: "TenantAgent",
     // The server maps this alias to the visitor's own agent from the session cookie.
     name: AGENT_ALIAS,
     onOpen: useCallback(() => setConnection("connected"), []),
+    // Too many open tabs is final for this tab. Reconnecting would only be refused again.
+    shouldReconnectOnClose: useCallback(
+      (event: CloseEvent) => event.code !== TOO_MANY_SOCKETS_CLOSE,
+      []
+    ),
     onClose: useCallback((event: CloseEvent) => {
+      if (event.code === TOO_MANY_SOCKETS_CLOSE) {
+        setConnection("too-many-tabs");
+        return;
+      }
       setConnection((c) =>
         c === "connecting" ? "connecting" : "reconnecting"
       );
       // An expired session closes the socket. Renew the cookie so the reconnect works.
       if (event.code === SESSION_EXPIRED_CLOSE) void refreshSession();
+    }, []),
+    onMessage: useCallback((event: MessageEvent) => {
+      const frame = parseErrorFrame(event.data);
+      if (!frame) return;
+      setNotice(errorNotice(frame));
+      stopRef.current();
     }, []),
     // The server pushes the hostname summary after every change.
     onStateUpdate: useCallback((state: TenantState) => {
@@ -291,13 +350,16 @@ function Workspace() {
 
   const { messages, sendMessage, clearHistory, stop, status } = useAgentChat({
     agent,
-    experimental_throttle: 100,
+    experimental_throttle: LIMITS.ui.chatThrottleMs,
     // History lives on the server. The client sends only the new message.
     syncMessagesToServer: false,
     prepareSendMessagesRequest: ({ messages }) => ({
       body: { messages: messages.slice(-1) }
     })
   });
+  useEffect(() => {
+    stopRef.current = stop;
+  }, [stop]);
 
   // Keep the open drawer in step with live state changes.
   const openRow = open
@@ -333,14 +395,28 @@ function Workspace() {
       messages={messages}
       status={status}
       connected={connection === "connected"}
-      onSend={(text) =>
-        sendMessage({ role: "user", parts: [{ type: "text", text }] })
+      notice={
+        connection === "too-many-tabs"
+          ? "Too many open tabs. Close another tab with this app, then reload this one."
+          : notice
       }
+      onSend={(text) => {
+        setNotice(null);
+        void sendMessage({ role: "user", parts: [{ type: "text", text }] });
+      }}
       onStop={stop}
       onDelete={setDeleting}
     />
   );
-  const table = <HostnameTable rows={hostnames} onOpen={setOpen} />;
+  // A refused tab never receives the table, so it says why instead of showing it empty.
+  const table =
+    connection === "too-many-tabs" ? (
+      <p className="px-4 py-2 text-sm text-kumo-subtle">
+        Your hostnames show here once this tab connects.
+      </p>
+    ) : (
+      <HostnameTable rows={hostnames} onOpen={setOpen} />
+    );
 
   return (
     <div className="flex h-dvh flex-col bg-kumo-elevated">

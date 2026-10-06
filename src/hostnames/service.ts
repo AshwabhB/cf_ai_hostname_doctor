@@ -15,6 +15,7 @@ import {
   type Actor,
   type HostnameState
 } from "./state-machine";
+import { log, type LogFields } from "../observability/log";
 
 export const TXT_PREFIX = "_cf-custom-hostname";
 const ID_PATTERN = /^hn_[0-9a-f]{24}$/;
@@ -188,7 +189,11 @@ function encodeCursor(value: object): string {
 }
 
 function decodeCursor<T>(cursor: string, schema: z.ZodType<T>): T | null {
-  if (cursor.length > 200 || !/^[A-Za-z0-9_-]+$/.test(cursor)) return null;
+  if (
+    cursor.length > LIMITS.paging.maxCursorChars ||
+    !/^[A-Za-z0-9_-]+$/.test(cursor)
+  )
+    return null;
   try {
     const json = atob(cursor.replace(/-/g, "+").replace(/_/g, "/"));
     const parsed = schema.safeParse(JSON.parse(json));
@@ -205,6 +210,9 @@ function clampLimit(limit: number | undefined): number {
 }
 
 export class HostnameService {
+  // Transitions written by the open transaction, logged after it commits.
+  private pendingTransitions: LogFields[] = [];
+
   constructor(
     private readonly storage: DurableObjectStorage,
     private readonly deps: ServiceDeps
@@ -281,6 +289,19 @@ export class HostnameService {
       )
       .toArray()[0];
     return row ? toView(row) : null;
+  }
+
+  // The id of the live row for a hostname, for log lines. Not a tool read, so it does not
+  // count against the per-turn memo.
+  liveId(input: string): string | undefined {
+    const normalized = normalizeHostname(input);
+    if (!normalized.ok) return undefined;
+    return this.sql
+      .exec<{ id: string }>(
+        "SELECT id FROM hostnames WHERE hostname = ? AND state <> 'deleted'",
+        normalized.ascii
+      )
+      .toArray()[0]?.id;
   }
 
   get(id: string): Result<{ hostname: HostnameView }> {
@@ -396,7 +417,7 @@ export class HostnameService {
     const generation = await this.deps.register(hostname);
 
     // Anything read above may have changed while we awaited, so check it all again.
-    return this.storage.transactionSync(() => {
+    return this.committed(() => {
       const raced = this.replay(input.idempotencyKey, input.requestHash);
       if (raced) return raced;
       if (this.liveExists(hostname)) return err({ error: "hostname-exists" });
@@ -418,7 +439,7 @@ export class HostnameService {
         generation,
         state: "pending",
         version: 1,
-        verify_token: randomHex(16),
+        verify_token: randomHex(LIMITS.hostnames.verifyTokenBytes),
         certificate_json: null,
         created_at: createdAt,
         updated_at: createdAt
@@ -497,7 +518,7 @@ export class HostnameService {
     reason: string | null,
     extra: { certificate?: CertificateView }
   ): Result<{ hostname: HostnameView }> {
-    return this.storage.transactionSync(() => {
+    return this.committed(() => {
       const row = this.row(id);
       if (!row) return err({ error: "not-found" });
       if (row.generation !== expected.generation) {
@@ -687,6 +708,18 @@ export class HostnameService {
     );
   }
 
+  // Runs fn in a transaction and logs its transitions only once it has committed.
+  private committed<T>(fn: () => T): T {
+    this.pendingTransitions = [];
+    try {
+      const result = this.storage.transactionSync(fn);
+      for (const fields of this.pendingTransitions) log("transition", fields);
+      return result;
+    } finally {
+      this.pendingTransitions = [];
+    }
+  }
+
   private insertEvent(
     hostnameId: string,
     generation: number,
@@ -696,6 +729,22 @@ export class HostnameService {
     reason: string | null,
     at: number
   ) {
+    // Time spent in the state being left. For pending to verified, that is the time to
+    // verify since the hostname was added or retried.
+    const previous = this.sql
+      .exec<{ at: number }>(
+        "SELECT at FROM events WHERE hostname_id = ? ORDER BY id DESC LIMIT 1",
+        hostnameId
+      )
+      .toArray()[0];
+    this.pendingTransitions.push({
+      hostname_id: hostnameId,
+      from_state: from,
+      to_state: to,
+      actor,
+      outcome: "committed",
+      latency_ms: previous ? Math.max(0, at - previous.at) : 0
+    });
     this.sql.exec(
       "INSERT INTO events (hostname_id, generation, from_state, to_state, actor, reason, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
       hostnameId,

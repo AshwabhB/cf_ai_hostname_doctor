@@ -66,7 +66,8 @@ function fromBase64Url(text: string): Uint8Array | null {
 }
 
 async function hmacKey(secret: string): Promise<CryptoKey> {
-  if (secret.length < 32) throw new Error("SESSION_SECRET is too short");
+  if (secret.length < LIMITS.session.minSecretChars)
+    throw new Error("SESSION_SECRET is too short");
   return crypto.subtle.importKey(
     "raw",
     encoder.encode(secret),
@@ -125,7 +126,7 @@ export async function decodeSession(
 }
 
 export function newSession(nowSeconds: number): SessionPayload {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const bytes = crypto.getRandomValues(new Uint8Array(LIMITS.session.sidBytes));
   const sid = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(
     ""
   );

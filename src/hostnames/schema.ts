@@ -79,7 +79,14 @@ const MIGRATIONS: readonly string[][] = [
     `CREATE INDEX hostnames_unreleased ON hostnames (registry_released, state)`
   ],
   // 5: when the current workflow run started, for reconcile's stall check.
-  [`ALTER TABLE hostnames ADD COLUMN workflow_started_at INTEGER`]
+  [`ALTER TABLE hostnames ADD COLUMN workflow_started_at INTEGER`],
+  // 6: model turns used per UTC day, for the daily turn quota.
+  [
+    `CREATE TABLE turn_quota (
+      day TEXT PRIMARY KEY,
+      used INTEGER NOT NULL
+    )`
+  ]
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

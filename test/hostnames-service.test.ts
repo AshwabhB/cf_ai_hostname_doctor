@@ -486,7 +486,7 @@ describe("migrations", () => {
           "SELECT version FROM hd_schema_migrations ORDER BY version"
         )
         .toArray();
-      expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5]);
+      expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5, 6]);
     });
   });
 });

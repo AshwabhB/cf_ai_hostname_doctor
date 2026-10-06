@@ -4,7 +4,14 @@ import { routeAgentRequest } from "agents";
 import { HOSTNAMES_PATH, handleHostnames } from "./api/hostnames";
 import { LIMITS } from "./config/limits";
 import { SECURITY_HEADERS } from "./config/security-headers";
-import { AGENT_ALIAS, SESSION_PATH } from "./config/protocol";
+import { AGENT_ALIAS, HEALTH_PATH, SESSION_PATH } from "./config/protocol";
+import {
+  annotateLogContext,
+  elapsedMs,
+  log,
+  visitorHash,
+  withLogContext
+} from "./observability/log";
 import {
   NO_STORE,
   isAllowedOrigin,
@@ -33,19 +40,78 @@ const nowSeconds = () => Math.floor(Date.now() / 1000);
 function withSecurityHeaders(res: Response): Response {
   if (res.status === 101 || res.webSocket) return res;
   const headers = new Headers(res.headers);
-  for (const [name, value] of Object.entries(SECURITY_HEADERS)) headers.set(name, value);
-  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+  for (const [name, value] of Object.entries(SECURITY_HEADERS))
+    headers.set(name, value);
+  return new Response(res.body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers
+  });
 }
 
-export async function handleRequest(request: Request, env: Env): Promise<Response> {
-  return withSecurityHeaders(await route(request, env));
-}
-
-async function route(
+export async function handleRequest(
   request: Request,
   env: Env
 ): Promise<Response> {
   const url = new URL(request.url);
+  if (!url.pathname.startsWith("/api/")) {
+    return withSecurityHeaders(await route(request, env));
+  }
+  // One api_request line per REST call. The id also reaches the agent, so the
+  // transitions a request causes carry the same correlation id.
+  const start = Date.now();
+  const res = await withLogContext(
+    { correlation_id: crypto.randomUUID() },
+    async () => {
+      const response = await route(request, env);
+      log("api_request", {
+        method: request.method,
+        route: routeTemplate(url.pathname),
+        status: response.status,
+        outcome:
+          response.status < 400
+            ? "ok"
+            : response.status < 500
+              ? "client_error"
+              : "server_error",
+        latency_ms: elapsedMs(start)
+      });
+      return response;
+    }
+  );
+  return withSecurityHeaders(res);
+}
+
+const HOSTNAME_SUBROUTES = new Set(["events", "check", "diagnosis", "retry"]);
+
+// The path with ids replaced, so logs never hold raw paths a client chose.
+export function routeTemplate(pathname: string): string {
+  if (pathname === SESSION_PATH) return SESSION_PATH;
+  const [, api, version, collection, id, sub, ...extra] = pathname.split("/");
+  if (api !== "api" || version !== "v1" || collection !== "hostnames") {
+    return "other";
+  }
+  if (!id) return "/api/v1/hostnames";
+  if (sub === undefined) return "/api/v1/hostnames/:id";
+  if (extra.length === 0 && HOSTNAME_SUBROUTES.has(sub)) {
+    return `/api/v1/hostnames/:id/${sub}`;
+  }
+  return "other";
+}
+
+// Liveness only. No session, no model call, nothing about the account.
+function handleHealth(request: Request): Response {
+  if (request.method !== "GET") return problem("method-not-allowed", request);
+  return new Response(JSON.stringify({ status: "ok" }), {
+    status: 200,
+    headers: { "content-type": "application/json", "cache-control": NO_STORE }
+  });
+}
+
+async function route(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+
+  if (url.pathname === HEALTH_PATH) return handleHealth(request);
 
   // No CORS anywhere, so preflights are refused outright.
   if (request.method === "OPTIONS") {
@@ -71,6 +137,9 @@ async function route(
   ) {
     const session = await readSession(request, env, nowSeconds());
     if (!session.ok) return problem("unauthorized", request);
+    annotateLogContext({
+      visitor: await visitorHash(env.SESSION_SECRET, session.payload.sid)
+    });
     return handleHostnames(request, env, url, session.payload.sid);
   }
   if (url.pathname.startsWith("/agents/"))

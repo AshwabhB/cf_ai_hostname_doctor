@@ -491,3 +491,60 @@ restarted, and run 1 must be terminated. With the stall check disabled the test 
   `src/workflow/verify.ts`, not to the tests.
 - The S5 row for `ashwabh-demo.duckdns.org` is still pending with `TXT_MISMATCH` in the
   local data, as noted in S6.
+
+## S8. Limits and observability (2026-10-06)
+
+**Changed.**
+- Daily turn quota: 30 model turns per visitor per UTC day, taken by one SQL statement
+  (migration 6, `turn_quota`) after the lease and before any model call. Over it, an
+  `hd_error` 429 frame with `retry_after`. The browser shows when turns reset and clears
+  the pending send.
+- Socket cap: 3 per visitor, counted from the SDK's connections. A 4th is accepted, then
+  closed with 4429. The browser stops reconnecting (`shouldReconnectOnClose`), says "Too
+  many open tabs", and explains the missing table instead of showing it empty.
+- Structured JSON logs through a redaction helper (`src/observability/log.ts`):
+  `api_request`, `transition` (logged after its transaction commits), `tool_call`,
+  `model_call`, `workflow_step` and `dns_check`. Visitor is an HMAC of the sid.
+  Correlation ids reach the agent through `AsyncLocalStorage` and, across RPC, as a
+  trailing argument on the write methods and workflow callbacks.
+- `GET /healthz`. Numbers moved into `limits.ts`: frame schema caps, cursor length, tool
+  hostname length, DoH retries and answer name length, step-cap summary rows, secret
+  length, sid and token sizes, and two UI timings.
+- Test output: the app's JSON log lines are dropped by `onConsoleLog` in
+  `vitest.config.ts`. `test/logs.test.ts` checks them directly.
+- `docs/RUNBOOK.md`: log schema, four SLIs with how each is measured and its n, and fixes
+  for a stuck pending hostname, AI quota, workflow failures and the kill switch.
+
+**Found while building.**
+- Disposing every RPC result inside the workflow steps did not remove the "hung" lines (13
+  before and after). Reverted, as agreed. They are a quirk of the local Workflows engine
+  under vitest: a run whose steps call a Durable Object logs one about 10 ms after it
+  completes. They are not failures.
+- `AsyncLocalStorage` context does carry through the SDK's chat turn into tool execution
+  and the transitions it causes (asserted in `test/logs.test.ts`).
+- Tool results carry no ids, so `tool_call` looks the row up with a new id-only
+  `liveId()`. Reusing `findLive()` broke the per-turn memo test, which counts its calls.
+
+**Checks run.**
+- unit: `npm run check` (typecheck, lint, 460 tests in 19 files, build). New: the quota
+  (30 then refused until midnight, shared across sockets, unused on 409 and kill switch,
+  no model call when refused), the socket cap (4th closed with 4429, a freed place is
+  reused, still enforced after the DO is evicted with sockets hibernated, separate per
+  visitor), the redaction rules, log lines from a real REST call, chat turn and workflow
+  run with nothing secret in them, `/healthz`, and the numeric limits rule with a planted
+  value. `npm run spikes`: 10 tests in 3 files passed.
+- live model, local production build under `vite preview`, 2026-10-06:
+  - Four tabs of one visitor: three connected, the fourth showed "Too many open tabs" and
+    the server log had exactly four upgrades, so it did not retry.
+  - With the local counter set to 30 in the dev database (then removed): a message got the
+    reset notice, no model call, and a `model_call` line with `quota_exceeded`.
+  - One real turn ("Why is ashwabh-demo.duckdns.org not verified yet?"): `dns_check`
+    (real DoH, 4 lookups), `tool_call` and `model_call` (first token 1,271 ms) under one
+    correlation id and the hashed visitor, with no hostname, token or text in the lines.
+- deployed: not run.
+
+**Open issues.**
+- The "hung" lines remain, now logged above as a local engine quirk.
+- A refused 4th tab shows "Connected" for a moment before the 4429 close arrives, because
+  the socket is accepted first.
+- The SLIs are defined and measurable from logs, but have no targets yet.

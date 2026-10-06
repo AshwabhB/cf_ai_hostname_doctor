@@ -12,6 +12,7 @@ import type {
   HostnameView,
   ServiceError
 } from "../hostnames/service";
+import { elapsedMs, log } from "../observability/log";
 
 export type ToolContext = {
   hostnames: HostnameService;
@@ -41,7 +42,7 @@ const ByHostname = z
     hostname: z
       .string()
       .min(1)
-      .max(300)
+      .max(LIMITS.chat.toolHostnameMaxChars)
       .describe("The hostname, for example shop.example.com")
   })
   .strict();
@@ -91,7 +92,16 @@ export function buildTools(ctx?: ToolContext): ToolSet {
 
   const { hostnames, diagnoses, fallbackOrigin } = ctx;
 
-  return {
+  // The row a hostname tool acted on, looked up by the server rather than read from the
+  // tool's output, which carries no ids.
+  const idFor = (input: unknown): string | undefined => {
+    const hostname = (input as { hostname?: unknown } | null)?.hostname;
+    return typeof hostname === "string"
+      ? hostnames.liveId(hostname)
+      : undefined;
+  };
+
+  return withToolLogs(idFor, {
     list_hostnames: tool({
       description:
         "List the user's hostnames with their states. STATE usually has this already.",
@@ -248,5 +258,48 @@ export function buildTools(ctx?: ToolContext): ToolSet {
         };
       }
     })
-  };
+  });
+}
+
+// What a tool result says happened, in one word for the logs.
+function toolOutcome(output: unknown): string {
+  const o = (output ?? {}) as Record<string, unknown>;
+  if (o.found === false) return "not_found";
+  if (o.added === false || o.retried === false) return "refused";
+  return "ok";
+}
+
+// One tool_call line per execution: the tool, its outcome and latency. Inputs and
+// outputs are never logged. Calls with invalid arguments never reach execute.
+function withToolLogs(
+  idFor: (input: unknown) => string | undefined,
+  tools: ToolSet
+): ToolSet {
+  for (const [name, t] of Object.entries(tools)) {
+    const execute = t.execute as
+      | ((input: unknown, options: unknown) => Promise<unknown>)
+      | undefined;
+    if (!execute) continue;
+    t.execute = (async (input: unknown, options: unknown) => {
+      const start = Date.now();
+      try {
+        const output = await execute(input, options);
+        log("tool_call", {
+          tool: name,
+          outcome: toolOutcome(output),
+          hostname_id: idFor(input),
+          latency_ms: elapsedMs(start)
+        });
+        return output;
+      } catch (e) {
+        log("tool_call", {
+          tool: name,
+          outcome: "error",
+          latency_ms: elapsedMs(start)
+        });
+        throw e;
+      }
+    }) as typeof t.execute;
+  }
+  return tools;
 }

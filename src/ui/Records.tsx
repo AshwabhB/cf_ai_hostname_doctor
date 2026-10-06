@@ -2,6 +2,7 @@
 import { Button, Text } from "@cloudflare/kumo";
 import { CheckIcon, CopyIcon } from "@phosphor-icons/react";
 import { useState } from "react";
+import { LIMITS } from "../config/limits";
 
 export type RequiredRecords = {
   apex: boolean;
@@ -23,7 +24,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
         try {
           await navigator.clipboard.writeText(value);
           setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
+          setTimeout(() => setCopied(false), LIMITS.ui.copiedFeedbackMs);
         } catch {
           setCopied(false);
         }

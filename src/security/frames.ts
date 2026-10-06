@@ -5,12 +5,12 @@
 import { z } from "zod";
 import { LIMITS } from "../config/limits";
 
-const id = z.string().min(1).max(64);
+const id = z.string().min(1).max(LIMITS.ws.maxIdChars);
 
 // @callable methods the browser may invoke, with their argument schemas.
 // Every other RPC method name is refused before the SDK looks it up.
 export const CALLABLES: Record<string, z.ZodType<unknown[]>> = {
-  confirmDelete: z.tuple([id, z.string().min(1).max(128)]),
+  confirmDelete: z.tuple([id, z.string().min(1).max(LIMITS.ws.maxEtagChars)]),
   retryHostname: z.tuple([id])
 };
 
@@ -22,7 +22,7 @@ const UserMessage = z
   .object({
     id,
     role: z.literal("user"),
-    parts: z.array(TextPart).min(1).max(8)
+    parts: z.array(TextPart).min(1).max(LIMITS.ws.maxMessageParts)
   })
   .strict()
   .refine(
@@ -71,7 +71,7 @@ const RpcFrame = z
   .object({
     type: z.literal("rpc"),
     id,
-    method: z.string().max(64),
+    method: z.string().max(LIMITS.ws.maxMethodChars),
     args: z.array(z.unknown())
   })
   .strict();
