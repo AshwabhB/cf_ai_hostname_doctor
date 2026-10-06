@@ -1,0 +1,11 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "spike-b-agent-name",
+  "main": "worker.ts",
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "class_name": "ProbeAgent", "name": "ProbeAgent" }]
+  },
+  "migrations": [{ "new_sqlite_classes": ["ProbeAgent"], "tag": "v1" }]
+}

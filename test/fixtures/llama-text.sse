@@ -1,0 +1,14 @@
+data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null,"index":0,"logprobs":null}],"created":1791284040,"id":"chatcmpl-18cbbfdc-f7d1-47a3-bc63-e53e2f9e08e1","model":"@cf/meta/llama-3.3-70b-instruct-sd","object":"chat.completion.chunk","p":"4x2kukf1ze8z2r9ju29v4uu2v1xh797n5kr89","prompt_text":null,"prompt_token_ids":null,"response":"","tool_calls":[],"usage":{"prompt_tokens":82,"completion_tokens":0,"total_tokens":82,"prompt_tokens_details":{"cached_tokens":0},"neurons":2.18674898147583}}
+
+data: {"choices":[{"delta":{"content":"custom"},"finish_reason":null,"index":0,"logprobs":null,"token_ids":null}],"created":1791284040,"id":"chatcmpl-18cbbfdc-f7d1-47a3-bc63-e53e2f9e08e1","model":"@cf/meta/llama-3.3-70b-instruct-sd","object":"chat.completion.chunk","p":"dg8ih573d0s9k6vrmj8dg","response":"custom","tool_calls":[],"usage":{"prompt_tokens":0,"completion_tokens":1,"total_tokens":1,"prompt_tokens_details":{"cached_tokens":0},"neurons":0.20480532944202423}}
+
+data: {"choices":[{"delta":{"content":" hostnames are"},"finish_reason":null,"index":0,"logprobs":null,"token_ids":null}],"created":1791284040,"id":"chatcmpl-18cbbfdc-f7d1-47a3-bc63-e53e2f9e08e1","model":"@cf/meta/llama-3.3-70b-instruct-sd","object":"chat.completion.chunk","p":"5p8tke14e7s1kr2m7zn78r3v6nk3o71l65dajt3x76el2s8mzx","response":" hostnames are","tool_calls":[],"usage":{"prompt_tokens":0,"completion_tokens":3,"total_tokens":3,"prompt_tokens_details":{"cached_tokens":0},"neurons":0.6144160032272339}}
+
+data: {"choices":[{"delta":{"content":" ready"},"finish_reason":"stop","index":0,"logprobs":null,"stop_reason":null,"token_ids":null}],"created":1791284040,"id":"chatcmpl-18cbbfdc-f7d1-47a3-bc63-e53e2f9e08e1","model":"@cf/meta/llama-3.3-70b-instruct-sd","object":"chat.completion.chunk","p":"264y16j5i6s2ohyzoy2i3fpl","response":" ready","tool_calls":[],"usage":{"prompt_tokens":0,"completion_tokens":2,"total_tokens":2,"prompt_tokens_details":{"cached_tokens":0},"neurons":0.40961065888404846}}
+
+data: {"choices":[],"created":1791284040,"id":"chatcmpl-18cbbfdc-f7d1-47a3-bc63-e53e2f9e08e1","model":"@cf/meta/llama-3.3-70b-instruct-sd","object":"chat.completion.chunk","p":"2mim4e8jio6","tool_calls":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"prompt_tokens_details":{"cached_tokens":0},"neurons":0}}
+
+data: {"response":"","usage":{"prompt_tokens":82,"completion_tokens":6,"total_tokens":88,"prompt_tokens_details":{"cached_tokens":0},"neurons":3.4155809730291367}}
+
+data: [DONE]
+

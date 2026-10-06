@@ -1,0 +1,3 @@
+# Copy to .dev.vars for local secrets. Never commit .dev.vars.
+# S1 needs no secrets. Workers AI uses your `wrangler login` session.
+# S2 adds the visitor cookie signing secret here.

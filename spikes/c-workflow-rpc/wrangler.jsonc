@@ -1,0 +1,18 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "spike-c-workflow-rpc",
+  "main": "worker.ts",
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "class_name": "Counter", "name": "COUNTER" }]
+  },
+  "migrations": [{ "new_sqlite_classes": ["Counter"], "tag": "v1" }],
+  "workflows": [
+    {
+      "name": "spike-workflow",
+      "binding": "SPIKE_WF",
+      "class_name": "SpikeWorkflow"
+    }
+  ]
+}

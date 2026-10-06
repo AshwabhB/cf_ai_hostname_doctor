@@ -1,0 +1,67 @@
+{
+  "name": "agent-starter",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Starter template for building AI chat agents on Cloudflare",
+  "keywords": [
+    "agents",
+    "ai",
+    "cloudflare"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "start": "vite dev",
+    "deploy": "vite build && wrangler deploy",
+    "types": "wrangler types env.d.ts",
+    "format": "oxfmt --write .",
+    "lint": "oxlint src/ test/ spikes/",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build",
+    "typecheck": "tsc",
+    "test": "vitest run --config vitest.config.ts",
+    "build": "vite build",
+    "spikes": "vitest run --config vitest.spikes.config.ts",
+    "spike:a": "node spikes/a-tool-calls/run.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/react": "^4.0.0",
+    "@cloudflare/ai-chat": "^0.12.1",
+    "@cloudflare/kumo": "^2.6.0",
+    "@phosphor-icons/react": "^2.1.10",
+    "@streamdown/code": "^1.1.1",
+    "agents": "^0.26.0",
+    "ai": "^7.0.128",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "streamdown": "^2.5.0",
+    "workers-ai-provider": "4.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@babel/plugin-proposal-decorators": "^8.0.2",
+    "@cloudflare/vite-plugin": "^1.46.0",
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@rolldown/plugin-babel": "^0.2.3",
+    "@tailwindcss/vite": "^4.3.1",
+    "@types/node": "^26.0.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "oxfmt": "^0.56.0",
+    "oxlint": "^1.71.0",
+    "tailwindcss": "^4.3.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.1.0",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.113.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "sharp@0.34.5": true,
+    "fsevents@2.3.3": true,
+    "workerd@1.20260815.1": true,
+    "workerd@1.20261001.1": true,
+    "core-js-pure@3.50.0": true
+  }
+}

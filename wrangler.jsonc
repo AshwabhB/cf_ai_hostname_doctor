@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hostname-doctor",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "ai": { "binding": "AI", "remote": true },
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/agents/*"]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "TenantAgent", "name": "TenantAgent" },
+      { "class_name": "HostnameRegistry", "name": "HostnameRegistry" }
+    ]
+  },
+  "migrations": [
+    {
+      "new_sqlite_classes": ["TenantAgent", "HostnameRegistry"],
+      "tag": "v1"
+    }
+  ],
+  "workflows": [
+    {
+      "name": "verify-workflow",
+      "binding": "VERIFY_WORKFLOW",
+      "class_name": "VerifyWorkflow"
+    }
+  ],
+  "observability": { "enabled": true }
+}

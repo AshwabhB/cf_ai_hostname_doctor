@@ -1,0 +1,12 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "spike-a-tool-calls",
+  "main": "worker.ts",
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "ai": { "binding": "AI", "remote": true },
+  "durable_objects": {
+    "bindings": [{ "class_name": "SpikeChatAgent", "name": "SpikeChatAgent" }]
+  },
+  "migrations": [{ "new_sqlite_classes": ["SpikeChatAgent"], "tag": "v1" }]
+}
