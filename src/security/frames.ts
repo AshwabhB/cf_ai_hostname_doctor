@@ -5,11 +5,14 @@
 import { z } from "zod";
 import { LIMITS } from "../config/limits";
 
-// @callable methods the browser may invoke, with their argument schemas.
-// Empty until S5 adds confirmDelete.
-export const CALLABLES: Record<string, z.ZodType<unknown[]>> = {};
-
 const id = z.string().min(1).max(64);
+
+// @callable methods the browser may invoke, with their argument schemas.
+// Every other RPC method name is refused before the SDK looks it up.
+export const CALLABLES: Record<string, z.ZodType<unknown[]>> = {
+  confirmDelete: z.tuple([id, z.string().min(1).max(128)]),
+  retryHostname: z.tuple([id])
+};
 
 const TextPart = z
   .object({ type: z.literal("text"), text: z.string().min(1) })

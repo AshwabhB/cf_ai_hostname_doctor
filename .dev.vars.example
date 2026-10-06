@@ -8,3 +8,6 @@ SESSION_SECRET=
 
 # Local dev only: drops the __Host- cookie prefix.
 COOKIE_DEV_MODE=true
+
+# Local dev origin. Production allows only the workers.dev origin from wrangler.jsonc.
+ALLOWED_ORIGINS=http://localhost:5173

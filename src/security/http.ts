@@ -2,30 +2,55 @@
 
 export type ProblemType =
   | "bad-request"
+  | "invalid-hostname"
+  | "invalid-cursor"
   | "unauthorized"
   | "forbidden"
   | "not-found"
   | "method-not-allowed"
+  | "hostname-exists"
+  | "quota-exceeded"
+  | "invalid-transition"
+  | "precondition-failed"
   | "payload-too-large"
+  | "idempotency-key-reuse"
+  | "precondition-required"
   | "rate-limited";
 
 const TITLES: Record<ProblemType, string> = {
   "bad-request": "Bad request",
+  "invalid-hostname": "Invalid hostname",
+  "invalid-cursor": "Invalid cursor",
   unauthorized: "Session missing or invalid",
   forbidden: "Forbidden",
   "not-found": "Not found",
   "method-not-allowed": "Method not allowed",
+  "hostname-exists": "Hostname already added",
+  "quota-exceeded": "Hostname limit reached",
+  "invalid-transition": "Not allowed in the current state",
+  "precondition-failed": "The hostname changed since you last read it",
   "payload-too-large": "Payload too large",
+  "idempotency-key-reuse":
+    "Idempotency key already used for a different request",
+  "precondition-required": "Required header missing",
   "rate-limited": "Too many requests"
 };
 
 const STATUS: Record<ProblemType, number> = {
   "bad-request": 400,
+  "invalid-hostname": 400,
+  "invalid-cursor": 400,
   unauthorized: 401,
   forbidden: 403,
   "not-found": 404,
   "method-not-allowed": 405,
+  "hostname-exists": 409,
+  "quota-exceeded": 409,
+  "invalid-transition": 409,
+  "precondition-failed": 412,
   "payload-too-large": 413,
+  "idempotency-key-reuse": 422,
+  "precondition-required": 428,
   "rate-limited": 429
 };
 

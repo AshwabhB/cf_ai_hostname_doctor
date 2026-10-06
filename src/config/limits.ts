@@ -17,6 +17,22 @@ export const LIMITS = {
     // The cookie is reissued when less than this much lifetime is left.
     renewWithinSeconds: 7 * DAY_SECONDS
   },
+  hostnames: {
+    // Live (not deleted) hostnames one visitor may hold.
+    maxPerVisitor: 25,
+    // Raw input longer than this is rejected before any IDNA work.
+    maxInputChars: 1024
+  },
+  idempotency: {
+    ttlSeconds: 24 * 60 * 60,
+    // Per visitor. The oldest keys are evicted past this.
+    maxRows: 500,
+    maxKeyChars: 128
+  },
+  paging: {
+    defaultLimit: 20,
+    maxLimit: 50
+  },
   http: {
     // Largest request body read on any route.
     maxBodyBytes: 16 * 1024
@@ -32,6 +48,7 @@ export const LIMITS = {
   // A unit test fails if the two drift apart.
   rateLimits: {
     sessionPerIp: { limit: 30, periodSeconds: 60 },
-    connectPerVisitor: { limit: 30, periodSeconds: 60 }
+    connectPerVisitor: { limit: 30, periodSeconds: 60 },
+    apiPerVisitor: { limit: 60, periodSeconds: 60 }
   }
 } as const;

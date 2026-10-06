@@ -132,3 +132,56 @@ Every chat request carried the full client message list and AIChatAgent saved it
   deploy does not upload it, but dist/ must never be shared. Noted in SECURITY.md.
 - Under `vite preview` the Worker read `.dev.vars` (dev mode cookie). Production uses the
   `__Host-` name.
+
+## S3. Data model and REST API (2026-10-06)
+
+**Changed.**
+- Production `ALLOWED_ORIGINS` is now only the workers.dev origin. Localhost moved to
+  `.dev.vars`. A test pins the production value, and tests set their own origin so CI does
+  not depend on `.dev.vars`.
+- Forward-only migrations in `TenantAgent.onStart` (src/hostnames/schema.ts) create the four
+  section 4 tables and indexes, tracked in `hd_schema_migrations`. Bound parameters only.
+- `HostnameService` (src/hostnames/service.ts) is the one service behind REST and the
+  callables. `transition()` checks the section 2 table, actor, generation and version inside
+  `transactionSync` and writes the row and event together. `changes()` is used for the
+  compare-and-set, because `rowsWritten` also counts index writes. Create awaits
+  `HostnameRegistry.register()`, then re-checks the key, duplicate and quota at commit.
+- `normalizeHostname` (src/hostnames/normalize.ts) uses `node:url` `domainToASCII` and
+  `domainToUnicode` (UTS #46, available in workerd) and tldts 7.4.16 for public suffixes,
+  ICANN and private. Rows store punycode, and views add `display_hostname`.
+- REST v1 per DESIGN section 5, plus `API_LIMITER` (60/min per sid), RFC 9457 types,
+  ETag, If-None-Match 304, If-Match 428/412, Idempotency-Key 428/422 with replay.
+- Limits: 25 live hostnames per visitor, idempotency keys 24 h and 500 rows, page size 20
+  default and 50 max. DESIGN.md does not name a page size, so these are only in limits.ts.
+- Callables `confirmDelete(id, etag)` and `retryHostname(id)` are in the frame allowlist with
+  argument schemas. The second is not called `retry` because `Agent` already has a
+  `retry()` helper, and overriding it would break SDK internals.
+- Delete goes deleting (user) then deleted (system) at once, because nothing can be claimed
+  before S6. Retry only moves failed or conflict back to pending. The workflow starts in S6.
+
+**Found while testing.**
+- `domainToASCII("shop.example.com/path")` returns `shop.example.com`, silently dropping the
+  path. It also accepts the bogus Punycode label `xn--zz`. The normalizer now refuses any
+  stray ASCII before IDNA and requires `xn--` labels to round trip.
+- The S2 tampered-signature test could pass by luck. The last base64url character of a
+  32-byte HMAC carries 2 padding bits, so some flips decode to identical bytes. Tokens now
+  must use the canonical encoding, and a test covers the non-canonical spelling.
+
+**Checks run.**
+- unit: typecheck, lint, 327 tests pass, three runs in a row. That includes 147 table checks
+  of every from, to and actor combination against a hand copy of section 2 (16 allowed),
+  the same 147 against real SQLite (row and event written together, or neither), stale
+  version and generation, two writers on one version, and 59 normalization tests (55 cases
+  covering IDN, trailing dot, 64-character label, IPs, wildcards, reserved names and public
+  suffixes). Also idempotency replay, key reuse 422, the 24 h expiry, the 500-row cap,
+  paging that stays stable while rows are added and deleted between pages, the quota under
+  racing creates, the 404 for another visitor's id, and the callables over the WebSocket.
+- unit, mutation check: removing the commit-time re-checks in create makes exactly the two
+  race tests fail. Restored.
+- deployed: not run. Local dev smoke test with curl against `npm run dev`: session 204,
+  create 201 with `display_hostname: shop.bücher.de`, same-key replay 201 with
+  `idempotent-replayed`, list 200, foreign origin 403, delete with If-Match 202, events
+  `pending:user, deleting:user, deleted:system`. The chat page still connects.
+
+**Open issues.**
+- `HostnameRegistry` has only `register()`. Claim and release come in S6.

@@ -1,6 +1,7 @@
 // Worker entry routing. Identity always comes from the signed cookie. The browser
 // asks for the agent named "me", and the router rewrites that to the visitor's sid.
 import { routeAgentRequest } from "agents";
+import { HOSTNAMES_PATH, handleHostnames } from "./api/hostnames";
 import { LIMITS } from "./config/limits";
 import { AGENT_ALIAS, SESSION_PATH } from "./config/protocol";
 import {
@@ -50,6 +51,14 @@ export async function handleRequest(
   }
 
   if (url.pathname === SESSION_PATH) return handleSession(request, env);
+  if (
+    url.pathname === HOSTNAMES_PATH ||
+    url.pathname.startsWith(`${HOSTNAMES_PATH}/`)
+  ) {
+    const session = await readSession(request, env, nowSeconds());
+    if (!session.ok) return problem("unauthorized", request);
+    return handleHostnames(request, env, url, session.payload.sid);
+  }
   if (url.pathname.startsWith("/agents/"))
     return handleAgent(request, env, url);
   return problem("not-found", request);

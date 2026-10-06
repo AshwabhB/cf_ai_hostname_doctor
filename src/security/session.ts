@@ -57,7 +57,9 @@ function fromBase64Url(text: string): Uint8Array | null {
   const padded = text.replace(/-/g, "+").replace(/_/g, "/");
   try {
     const binary = atob(padded + "=".repeat((4 - (padded.length % 4)) % 4));
-    return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    // Only the canonical encoding is accepted, so each token has exactly one spelling.
+    return toBase64Url(bytes) === text ? bytes : null;
   } catch {
     return null;
   }

@@ -1,5 +1,5 @@
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
-import type { Connection, WSMessage } from "agents";
+import { callable, type Connection, type WSMessage } from "agents";
 import {
   convertToModelMessages,
   pruneMessages,
@@ -16,6 +16,13 @@ import {
 import { modelFactory } from "./ai/model";
 import { LIMITS } from "./config/limits";
 import { SESSION_EXPIRED_CLOSE } from "./config/protocol";
+import { migrate } from "./hostnames/schema";
+import {
+  HostnameService,
+  type CreateInput,
+  type HostnameView,
+  type Result
+} from "./hostnames/service";
 import { SESSION_EXP_PARAM, handleRequest } from "./router";
 import {
   FrameRateLimiter,
@@ -44,6 +51,8 @@ export class TenantAgent extends AIChatAgent<Env> {
   maxPersistedMessages = LIMITS.chat.maxPersistedMessages;
 
   private frameLimiter = new FrameRateLimiter();
+  private migrated = false;
+  private _hostnames: HostnameService | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -109,6 +118,65 @@ export class TenantAgent extends AIChatAgent<Env> {
     }
   }
 
+  async onStart(props?: object) {
+    await super.onStart(props);
+    this.ensureSchema();
+  }
+
+  private ensureSchema() {
+    if (this.migrated) return;
+    migrate(this.ctx.storage);
+    this.migrated = true;
+  }
+
+  // One service for REST (via the Worker over RPC) and the @callable methods below.
+  private get hostnames(): HostnameService {
+    this.ensureSchema();
+    this._hostnames ??= new HostnameService(this.ctx.storage, {
+      register: (hostname) =>
+        this.env.HostnameRegistry.getByName(hostname).register(),
+      now: () => Date.now()
+    });
+    return this._hostnames;
+  }
+
+  // RPC for the Worker's REST routes. Not @callable, so browsers cannot reach them.
+  apiList(limit?: number, cursor?: string) {
+    return this.hostnames.list({ limit, cursor });
+  }
+
+  apiGet(id: string) {
+    return this.hostnames.get(id);
+  }
+
+  apiEvents(id: string, limit?: number, cursor?: string) {
+    return this.hostnames.events(id, { limit, cursor });
+  }
+
+  apiCreate(input: CreateInput) {
+    return this.hostnames.create(input);
+  }
+
+  apiDelete(id: string, etag: string) {
+    return this.hostnames.delete(id, etag, "user");
+  }
+
+  apiRetry(id: string) {
+    return this.hostnames.retry(id, "user");
+  }
+
+  // Browser-callable. Arguments are schema-checked by the frame guard (CALLABLES).
+  @callable()
+  confirmDelete(id: string, etag: string): Result<{ hostname: HostnameView }> {
+    return this.hostnames.delete(id, etag, "user");
+  }
+
+  // Named retryHostname because Agent already has a retry() helper.
+  @callable()
+  retryHostname(id: string): Result<{ hostname: HostnameView }> {
+    return this.hostnames.retry(id, "user");
+  }
+
   // State only ever changes on the server.
   validateStateChange(_nextState: unknown, source: Connection | "server") {
     if (source !== "server") throw new Error("client state is read only");
@@ -132,8 +200,42 @@ export class TenantAgent extends AIChatAgent<Env> {
   }
 }
 
-// Ownership per hostname. Implemented in S6.
-export class HostnameRegistry extends DurableObject<Env> {}
+// One per normalized hostname. S3 only hands out generations. Claim and release
+// arrive in S6 and use the owner columns.
+export class HostnameRegistry extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS ownership (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      next_generation INTEGER NOT NULL,
+      owner_tenant TEXT,
+      owner_generation INTEGER,
+      updated_at INTEGER NOT NULL
+    )`);
+  }
+
+  // Returns a fresh generation for this hostname. Monotonic and never reused.
+  register(): number {
+    const sql = this.ctx.storage.sql;
+    return this.ctx.storage.transactionSync(() => {
+      sql.exec(
+        "INSERT OR IGNORE INTO ownership (id, next_generation, updated_at) VALUES (1, 1, ?)",
+        Date.now()
+      );
+      const { next_generation } = sql
+        .exec<{ next_generation: number }>(
+          "SELECT next_generation FROM ownership WHERE id = 1"
+        )
+        .one();
+      sql.exec(
+        "UPDATE ownership SET next_generation = ?, updated_at = ? WHERE id = 1",
+        next_generation + 1,
+        Date.now()
+      );
+      return next_generation;
+    });
+  }
+}
 
 export type VerifyParams = {
   tenantId: string;

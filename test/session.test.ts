@@ -14,9 +14,12 @@ import { nowSeconds } from "./helpers";
 
 const secret = env.SESSION_SECRET;
 
-function flipLastChar(text: string) {
-  const last = text.at(-1) === "A" ? "B" : "A";
-  return text.slice(0, -1) + last;
+// Flips a character in the middle of the signature, where every bit is significant.
+function flipSignatureChar(token: string) {
+  const i = token.length - 10;
+  return (
+    token.slice(0, i) + (token[i] === "A" ? "B" : "A") + token.slice(i + 1)
+  );
 }
 
 describe("session token", () => {
@@ -60,11 +63,25 @@ describe("session token", () => {
   it("rejects a tampered signature", async () => {
     const token = await encodeSession(newSession(nowSeconds()), secret);
     const result = await decodeSession(
-      flipLastChar(token),
+      flipSignatureChar(token),
       secret,
       nowSeconds()
     );
     expect(result).toEqual({ ok: false, reason: "bad_signature" });
+  });
+
+  it("rejects a non-canonical spelling of a valid signature", async () => {
+    const token = await encodeSession(newSession(nowSeconds()), secret);
+    // The last of 43 base64url characters carries 2 padding bits. Setting one gives a
+    // string that decodes to the same bytes, which must still be refused.
+    const alphabet =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const last = alphabet.indexOf(token.at(-1) ?? "A");
+    const variant = token.slice(0, -1) + alphabet[last ^ 1];
+    expect(await decodeSession(variant, secret, nowSeconds())).toEqual({
+      ok: false,
+      reason: "malformed"
+    });
   });
 
   it("rejects a token signed with another secret", async () => {

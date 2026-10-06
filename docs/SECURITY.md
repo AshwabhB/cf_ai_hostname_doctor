@@ -39,12 +39,19 @@ Every number below comes from `src/config/limits.ts`.
 | `/api/v1/session`, other methods | any | None | Exact match required | None | 16 KiB declared body (413) | None (405) |
 | `GET /agents/tenant-agent/me/get-messages` | GET | Valid cookie (401). Name must be `me` or own sid (403) | Not checked (GET) | Path allowlist (404) | No body read | None |
 | `/agents/tenant-agent/me` upgrade | GET + Upgrade | Valid cookie (401). Name must be `me` or own sid (403) | Exact match required (403) | Frame schemas below | 32 KiB per frame (close 1009) | `CONNECT_LIMITER`, 30/min per sid, at the Worker. Frames: bucket of 20, refills 2/s per connection, in the DO |
+| `GET /api/v1/hostnames?limit&cursor` | GET | Valid cookie (401). Rows are per visitor | Not checked (GET) | Strict query: `limit` 1 to 999 (clamped to 50), opaque `cursor` (400). Unknown params 400 | No body read | `API_LIMITER`, 60/min per sid, at the Worker |
+| `POST /api/v1/hostnames` | POST | Valid cookie (401) | Exact match required (403) | `Idempotency-Key` required (428), `[A-Za-z0-9._:-]{1,128}` (400). JSON `{ hostname }` strict (400), then normalization (400 `invalid-hostname`) | 16 KiB, enforced while reading even without Content-Length (413) | `API_LIMITER` |
+| `GET /api/v1/hostnames/{id}` | GET | Valid cookie (401). Another visitor's id is 404 | Not checked (GET) | No query params (400) | No body read | `API_LIMITER` |
+| `DELETE /api/v1/hostnames/{id}` | DELETE | Valid cookie (401). Another visitor's id is 404 | Exact match required (403) | `If-Match` required (428), must be the current ETag (412) | 16 KiB declared body (413) | `API_LIMITER` |
+| `GET /api/v1/hostnames/{id}/events` | GET | Valid cookie (401). Another visitor's id is 404 | Not checked (GET) | Same query rules as the list | No body read | `API_LIMITER` |
+| `POST /api/v1/hostnames/{id}/retry` | POST | Valid cookie (401). Another visitor's id is 404 | Exact match required (403) | No body used | 16 KiB declared body (413) | `API_LIMITER` |
 | `/agents/<any other class>/*` | any | n/a | n/a | n/a | n/a | Rejected with 403 |
 | `OPTIONS *` | OPTIONS | n/a | n/a | n/a | n/a | Rejected with 403. No CORS anywhere |
 | anything else | any | n/a | Exact match for non-GET | n/a | 16 KiB declared body (413) | 404 |
 
-Allowed origins come from `ALLOWED_ORIGINS`:
-`https://hostname-doctor.bhatnagarashwabh.workers.dev` and `http://localhost:5173`.
+Allowed origins come from `ALLOWED_ORIGINS`. Production (`wrangler.jsonc`) allows only
+`https://hostname-doctor.bhatnagarashwabh.workers.dev`, and a test pins that. Local dev adds
+`http://localhost:5173` through `.dev.vars`.
 Requests that are not GET, and every WebSocket upgrade, must send one of these exactly.
 A missing `Origin` header counts as not allowed.
 
@@ -66,7 +73,7 @@ before state sync, RPC or the chat protocol. It runs in this order:
 | `cf_agent_chat_request_cancel` | Allowed, `{ type, id }` only |
 | `cf_agent_stream_resume_request`, `cf_agent_stream_resume_ack` | Allowed, needed for stream resume on reconnect |
 | `cf_agent_state` (client setState) | 403. `validateStateChange` also throws for any source but the server |
-| `rpc` | 403 unless the method is in `CALLABLES` in `src/security/frames.ts` (empty until S5), then its argument schema applies |
+| `rpc` | 403 unless the method is in `CALLABLES` in `src/security/frames.ts`, then its argument schema applies (400). Listed: `confirmDelete(id, etag)` and `retryHostname(id)`, which call the same `HostnameService` as REST. The REST RPC methods (`apiCreate` and the rest) are not `@callable` and are refused with 403 |
 | `cf_agent_chat_messages` (history overwrite) | 400 |
 | `cf_agent_tool_result`, `cf_agent_tool_approval` | 400. There are no client tools, and deletes use a `@callable` |
 | anything else, non-JSON | 400 |
@@ -98,3 +105,22 @@ or missing origin, client setState, unlisted RPC, history overwrite, client tool
 an oversized frame, a binary frame, unknown fields, file parts, an over-long message, frame
 floods and both 429s. Each rejection test also asserts that `modelFactory.create`, the only
 path to Workers AI, was never called.
+
+## Hostname data
+
+- Each visitor's rows live in their own TenantAgent SQLite, so another visitor's id is
+  simply not found (404). Ids are checked against `hn_` plus 24 hex characters before any
+  query, and every query uses bound parameters.
+- `normalizeHostname` is the only way a hostname is accepted. Any ASCII character other than
+  letters, digits, dot and hyphen is refused before IDNA, because `domainToASCII` parses like
+  a URL host and would silently drop `/path`, `:port` or `user@`. Punycode labels must round
+  trip, public suffixes (ICANN and private, through tldts) are refused, and IPs, wildcards
+  and reserved names are refused.
+- Every state change goes through `HostnameService.transition`, which checks the section 2
+  table, the actor, the generation and the version inside one transaction, and writes the
+  event with the row. Values read before an await are checked again at commit.
+- Error types: `bad-request` 400, `invalid-hostname` 400, `invalid-cursor` 400,
+  `unauthorized` 401, `forbidden` 403, `not-found` 404, `method-not-allowed` 405,
+  `hostname-exists` 409, `quota-exceeded` 409, `invalid-transition` 409,
+  `precondition-failed` 412, `payload-too-large` 413, `idempotency-key-reuse` 422,
+  `precondition-required` 428, `rate-limited` 429.

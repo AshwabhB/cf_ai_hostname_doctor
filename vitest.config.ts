@@ -13,7 +13,9 @@ export default defineConfig({
         // Test-only values. They override .dev.vars so tests never touch the real secret.
         bindings: {
           SESSION_SECRET: "test-only-session-secret-not-used-anywhere-else",
-          COOKIE_DEV_MODE: "false"
+          COOKIE_DEV_MODE: "false",
+          // Production allows only workers.dev. Tests use the local dev origin.
+          ALLOWED_ORIGINS: "http://localhost:5173"
         }
       }
     })
