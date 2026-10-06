@@ -147,3 +147,27 @@ path to Workers AI, was never called.
   deletes do not fail on unrelated DNS saves.
 - No source or test file may contain invisible or bidi control characters (Trojan Source).
   The same source-rules test enforces this.
+
+## Model boundary
+
+- The model only acts through six tools (`src/ai/tools.ts`). Their inputs are strict zod
+  objects holding a hostname, and the visitor, ids and ETags come from server context.
+  Writes run as the `model` actor, which the transition table refuses for `verified`,
+  `active`, `deleting` and `deleted`. `propose_delete` returns a confirm card and changes
+  nothing. The delete itself needs the user's click on the `confirmDelete` callable. A test
+  runs every tool against a row in every state and finds only the two retries the table
+  allows.
+- The system prompt (`src/ai/prompts/system.v1.ts`, about 544 tokens by a conservative
+  estimate) holds no secrets. Each turn appends UTC time and a STATE block from SQL, marked
+  as data. Tool results and DNS values reach the model as tool data, never in the system
+  message, and DNS text is already sanitized.
+- Bad tool arguments never execute. The first one returns the schema error to the model,
+  and the second ends the turn with a fixed message.
+- One turn per visitor through a SQLite lease (60 s backstop expiry). It is released when
+  the SDK handler returns and in `onChatResponse`, which covers completed, error, abort and
+  timeout. Only the holder can release it. An overlapping request gets `hd_error` 409.
+- Time limits: 10 s to the first token and 30 s in total. Before the first token, one retry
+  on a 5xx or timeout (`src/ai/first-token.ts`). Nothing is retried after the first token.
+- `AI_KILL_SWITCH="true"` (a plain var) answers with a fixed message and never creates a
+  model.
+- `FALLBACK_ORIGIN` and every name under it are refused as custom hostnames.

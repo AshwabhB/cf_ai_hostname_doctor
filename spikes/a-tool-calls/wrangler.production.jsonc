@@ -1,0 +1,24 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "spike-a-production",
+  "main": "production.ts",
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "ai": { "binding": "AI", "remote": true },
+  "vars": {
+    "FALLBACK_ORIGIN": "hostname-doctor.bhatnagarashwabh.workers.dev",
+    "AI_KILL_SWITCH": "false"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "SpikeTenantAgent", "name": "SpikeTenantAgent" },
+      { "class_name": "HostnameRegistry", "name": "HostnameRegistry" }
+    ]
+  },
+  "migrations": [
+    {
+      "new_sqlite_classes": ["SpikeTenantAgent", "HostnameRegistry"],
+      "tag": "v1"
+    }
+  ]
+}

@@ -15,7 +15,8 @@ export type NormalizeError =
   | "ip_address"
   | "wildcard"
   | "reserved_name"
-  | "public_suffix";
+  | "public_suffix"
+  | "service_hostname";
 
 export type Normalized =
   | { ok: true; ascii: string; unicode: string }
@@ -36,7 +37,14 @@ export const NORMALIZE_MESSAGES: Record<NormalizeError, string> = {
   wildcard: "Wildcard hostnames are not supported.",
   reserved_name:
     "Reserved names such as .test, .local and localhost cannot be used.",
-  public_suffix: "A public suffix such as co.uk cannot be used on its own."
+  public_suffix: "A public suffix such as co.uk cannot be used on its own.",
+  service_hostname:
+    "This hostname belongs to the service itself and cannot be added."
+};
+
+export type NormalizeOptions = {
+  // The service's own zone (FALLBACK_ORIGIN). It and every name under it are refused.
+  serviceZone?: string;
 };
 
 const MAX_HOSTNAME = 253;
@@ -73,7 +81,10 @@ function looksLikeIp(host: string): boolean {
   return /^(?:0x[0-9a-f]*|[0-9]+)$/.test(last);
 }
 
-export function normalizeHostname(input: string): Normalized {
+export function normalizeHostname(
+  input: string,
+  options: NormalizeOptions = {}
+): Normalized {
   if (input.length > LIMITS.hostnames.maxInputChars) return fail("too_long");
   let host = input.trim().toLowerCase();
   if (host.endsWith(".")) host = host.slice(0, -1);
@@ -104,6 +115,11 @@ export function normalizeHostname(input: string): Normalized {
   // Private suffixes count too, so a bare workers.dev or github.io is refused.
   if (getPublicSuffix(ascii, { allowPrivateDomains: true }) === ascii) {
     return fail("public_suffix");
+  }
+
+  const zone = options.serviceZone?.toLowerCase().replace(/\.$/, "");
+  if (zone && (ascii === zone || ascii.endsWith(`.${zone}`))) {
+    return fail("service_hostname");
   }
 
   const unicode = domainToUnicode(ascii);

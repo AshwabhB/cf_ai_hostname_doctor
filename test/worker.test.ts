@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { LIMITS } from "../src/config/limits";
 import { MODEL_ID } from "../src/config/model";
-import { TenantAgent, buildTools } from "../src/server";
+import { TOOL_NAMES, buildTools } from "../src/ai/tools";
+import { TenantAgent } from "../src/server";
 
 describe("starter demo removal", () => {
-  it("gives the model no tools until S5 adds the hostname tools", () => {
+  it("exposes exactly the six hostname tools and nothing from the starter", () => {
     expect(Object.keys(buildTools())).toEqual([]);
+    expect([...TOOL_NAMES].sort()).toEqual([
+      "add_hostname",
+      "explain_findings",
+      "get_hostname",
+      "list_hostnames",
+      "propose_delete",
+      "retry_hostname"
+    ]);
   });
 
   it("does not expose the starter's MCP server callables", () => {

@@ -240,3 +240,82 @@ Every chat request carried the full client message list and AIChatAgent saved it
   custom hostname is not implemented.
 - To verify the DuckDNS demo, set its TXT to the row's `txt_value`. DuckDNS serves the same
   TXT for `_cf-custom-hostname.<domain>`.
+
+## S5. Chat agent (2026-10-06)
+
+**Changed.**
+- Normalization refuses `FALLBACK_ORIGIN` and names under it (`service_hostname`) when
+  called with the service zone, for both REST create and the tool. DNS follow-ups still
+  accept the fallback as a CNAME target.
+- `src/ai/turn.ts`: `streamText` through the shimmed provider, temperature 0.2,
+  1024 max output, `stepCountIs(5)`, `pruneMessages`, then history trimmed to the last 12
+  messages and 6k tokens. The STATE block is never trimmed.
+- `src/ai/tools.ts`: the six section 8 tools. Read-only results are memoized per turn.
+  `add_hostname` uses an idempotency key derived from the turn and tool call ids.
+  `explain_findings` runs a fresh check when the saved one is over 5 minutes old.
+- `src/ai/prompts/system.v1.ts`: versioned prompt with two no-tool examples. About 544
+  tokens at 3 characters per token, or about 408 at 4.
+- `src/ai/context.ts`: STATE from SQL with UTC time, capped at 1.5k tokens (drops hostnames
+  and reports `omitted_hostnames`).
+- Context window checked first: 24,000 tokens per the Workers AI model page. Budget is about
+  600 + 1,500 + 6,000 + 1,024 plus tool schemas and results.
+- Fallbacks: the second invalid tool call ends the turn with a fixed message and zero
+  writes. The step cap ends with a summary from SQL and no extra model call. The kill switch
+  answers with a fixed message.
+- `src/ai/lease.ts` plus migration 3: one turn per visitor, released on every ending, with
+  60 s expiry as the backstop.
+- `src/ai/first-token.ts`: 10 s first-token limit with one retry on a 5xx or timeout,
+  wrapped around the model. The SDK's `maxRetries` is 0, so there is exactly one retry.
+  `timeout.totalMs` is 30 s.
+- `src/hostnames/records.ts`: one source for the records a customer must add. Apex domains
+  get "ALIAS or flattened CNAME", never a plain CNAME.
+
+**Found while building.**
+- `stopWhen` runs before `onStepFinish`, and ai 7 reports bad tool calls as `tool-call`
+  parts with `invalid: true`. Counting from `steps` inside the stop condition fixed it.
+- The SDK's `timeout.firstChunkMs` aborts but does not retry, so the one retry before the
+  first token lives in a small wrapper.
+- The first live smoke turn told the user to add a plain CNAME for
+  `ashwabh-demo.duckdns.org`, an apex. Fixed with `requiredRecords`, and re-run.
+
+**Checks run.**
+- unit and mock model: typecheck, lint, 413 tests pass. Chat tests (16) cover:
+  - chat injection: no state change, and only the user's create event
+  - a TXT carrying instructions: it reaches the model only as sanitized tool data, never in
+    the system message
+  - two bad tool calls: two model calls, the fixed message, zero rows
+  - the step cap: exactly 5 model calls and a SQL summary
+  - per-turn memoization: one `findLive`
+  - lease contention (409), and the lease freed after an error and after a timeout
+  - the 60 s backstop and holder-only release
+  - a 5xx retry, a first-token timeout retry, and no second retry
+  - the kill switch: no model created
+  - the prompt size and budgets
+
+  Tool tests run every tool against every state. The only moves are failed to pending and
+  conflict to pending, both by `model`.
+- unit, mutation checks: disabling the invalid-call stop makes the bad-args test fail.
+  Disabling the lease makes the contention test fail. Both restored.
+- live model, Spike A production mode (real TenantAgent, production prompt and tools,
+  `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, 2026-10-06):
+  - hostname questions: good tool calls 20/20, median 4675 ms, max 18219 ms
+  - plain questions with a tool call: **0/5** (S1 was 5/5)
+  - hostname turns with more than one tool call: **1/20** (S1 was 9/20); the one repeat was
+    `explain_findings` called twice with the same input, so the memo served it
+  - target of 1 in 5 or less met on both
+  - no answer claimed a hostname was verified
+  - the `shop.acme.io` answer reported SERVFAIL, which is real: the resolver returns Status 2,
+    "No Reachable Authority at delegation acme.io"
+- live model, smoke test in the browser (local dev, the same model id, 2026-10-06): "Please
+  add ashwabh-demo.duckdns.org and tell me exactly which DNS records I need" called
+  `add_hostname`, then `get_hostname`, and answered with the real TXT name and token. After
+  the apex fix, "Which DNS records do I need for ashwabh-demo.duckdns.org?" made one
+  `get_hostname` call and answered with the TXT record plus "ALIAS or flattened CNAME" and
+  the apex note.
+- deployed: not run.
+
+**Open issues.**
+- The UI still renders tool parts as raw JSON, and `propose_delete` has no Confirm button yet
+  (S7).
+- On the add turn the model called `get_hostname` after `add_hostname`, which is redundant
+  but harmless.

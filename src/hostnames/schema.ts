@@ -61,6 +61,14 @@ const MIGRATIONS: readonly string[][] = [
     `CREATE TABLE check_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL)`,
     // count and prune runs in the last hour
     `CREATE INDEX check_runs_at ON check_runs (at)`
+  ],
+  // 3: the one-turn-per-visitor chat lease.
+  [
+    `CREATE TABLE turn_lease (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      holder TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    )`
   ]
 ];
 

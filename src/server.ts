@@ -1,19 +1,17 @@
-import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
-import { callable, type Connection, type WSMessage } from "agents";
 import {
-  convertToModelMessages,
-  pruneMessages,
-  stepCountIs,
-  streamText,
-  type ToolSet
-} from "ai";
+  AIChatAgent,
+  type ChatResponseResult,
+  type OnChatMessageOptions
+} from "@cloudflare/ai-chat";
+import { callable, type Connection, type WSMessage } from "agents";
 import {
   DurableObject,
   WorkflowEntrypoint,
   type WorkflowEvent,
   type WorkflowStep
 } from "cloudflare:workers";
-import { modelFactory } from "./ai/model";
+import { TurnLease } from "./ai/lease";
+import { runTurn } from "./ai/turn";
 import { LIMITS } from "./config/limits";
 import { SESSION_EXPIRED_CLOSE } from "./config/protocol";
 import { SqlDnsCache } from "./dns/cache";
@@ -35,14 +33,6 @@ import {
   utf8Length
 } from "./security/frames";
 
-const SYSTEM_PROMPT = `You help SaaS teams set up custom hostnames.
-You explain DNS findings in plain language. You never claim a hostname is verified unless a tool result says so.`;
-
-// Hostname tools arrive in S5. Until then the model gets no tools at all.
-export function buildTools(): ToolSet {
-  return {};
-}
-
 function sendError(connection: Connection, status: number, title: string) {
   connection.send(JSON.stringify({ type: "hd_error", status, title }));
 }
@@ -58,6 +48,11 @@ export class TenantAgent extends AIChatAgent<Env> {
   private migrated = false;
   private _hostnames: HostnameService | null = null;
   private _diagnoses: DiagnosisService | null = null;
+  // Time limits for one model call. A field so tests can shorten them.
+  chatTimeouts: { firstChunkMs: number; totalMs: number } = {
+    firstChunkMs: LIMITS.chat.firstTokenMs,
+    totalMs: LIMITS.chat.totalMs
+  };
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -109,15 +104,32 @@ export class TenantAgent extends AIChatAgent<Env> {
       case "reject":
         sendError(connection, verdict.status, verdict.title);
         return;
-      case "chat":
+      case "chat": {
         if (this.messages.some((m) => m.id === verdict.message.id)) {
           sendError(connection, 400, "invalid chat request");
           return;
         }
-        return next(
-          connection,
-          rebuildChatRequest(verdict.requestId, this.messages, verdict.message)
-        );
+        this.ensureSchema();
+        const lease = new TurnLease(this.ctx.storage);
+        if (!lease.acquire(verdict.requestId, Date.now())) {
+          sendError(connection, 409, "a reply is already in progress");
+          return;
+        }
+        // The SDK handler resolves when the turn is over, however it ended.
+        // onChatResponse releases too, and the expiry is only a backstop.
+        try {
+          return await next(
+            connection,
+            rebuildChatRequest(
+              verdict.requestId,
+              this.messages,
+              verdict.message
+            )
+          );
+        } finally {
+          lease.release(verdict.requestId);
+        }
+      }
       case "pass":
         return next(connection, message);
     }
@@ -140,7 +152,8 @@ export class TenantAgent extends AIChatAgent<Env> {
     this._hostnames ??= new HostnameService(this.ctx.storage, {
       register: (hostname) =>
         this.env.HostnameRegistry.getByName(hostname).register(),
-      now: () => Date.now()
+      now: () => Date.now(),
+      serviceZone: this.env.FALLBACK_ORIGIN
     });
     return this._hostnames;
   }
@@ -214,20 +227,23 @@ export class TenantAgent extends AIChatAgent<Env> {
   }
 
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
-    const result = streamText({
-      model: modelFactory.create(this.env.AI, this.sessionAffinity),
-      system: SYSTEM_PROMPT,
-      messages: pruneMessages({
-        messages: await convertToModelMessages(this.messages),
-        toolCalls: "before-last-2-messages",
-        reasoning: "before-last-message"
-      }),
-      tools: buildTools(),
-      stopWhen: stepCountIs(LIMITS.chat.maxSteps),
-      abortSignal: options?.abortSignal
+    return runTurn({
+      env: this.env,
+      storage: this.ctx.storage,
+      messages: this.messages,
+      hostnames: this.hostnames,
+      diagnoses: this.diagnoses,
+      requestId: options?.requestId ?? crypto.randomUUID(),
+      sessionAffinity: this.sessionAffinity,
+      abortSignal: options?.abortSignal,
+      timeouts: this.chatTimeouts
     });
+  }
 
-    return result.toUIMessageStreamResponse();
+  // Every turn ends here: completed, error or aborted (timeouts surface as errors).
+  protected onChatResponse(result: ChatResponseResult) {
+    this.ensureSchema();
+    new TurnLease(this.ctx.storage).release(result.requestId);
   }
 }
 

@@ -152,24 +152,20 @@ async function waitForReady(proc) {
   });
 }
 
-const proc = spawn(
-  "npx",
-  [
-    "wrangler",
-    "dev",
-    "-c",
-    join(here, "wrangler.jsonc"),
-    "--port",
-    String(PORT)
-  ],
-  { stdio: ["ignore", "pipe", "pipe"] }
-);
-
 // Modes:
-//   agent       (default) full path: AIChatAgent, AI SDK streamText, workers-ai-provider
+//   agent       (default) S1 spike agent: one test tool, AI SDK, workers-ai-provider + shim
+//   production  the real TenantAgent: production prompt, six tools, memo, context, retry
 //   raw         env.AI.run without streaming, read choices[0].message.tool_calls
 //   raw-stream  env.AI.run with streaming, rebuilt from choices[0].delta.tool_calls only
 const MODE = process.argv[2] ?? "agent";
+const CONFIG =
+  MODE === "production" ? "wrangler.production.jsonc" : "wrangler.jsonc";
+
+const proc = spawn(
+  "npx",
+  ["wrangler", "dev", "-c", join(here, CONFIG), "--port", String(PORT)],
+  { stdio: ["ignore", "pipe", "pipe"] }
+);
 
 function rawToolCall(raw) {
   const call = raw?.choices?.[0]?.message?.tool_calls?.[0];
@@ -210,7 +206,77 @@ function classifyRaw(call, expected) {
   return { verdict: "good", detail: JSON.stringify(input) };
 }
 
+const READ_TOOLS = new Set(["get_hostname", "explain_findings"]);
+
+// Production mode: any of the six tools may be called. A hostname question is good when
+// a read tool is called for the right hostname and succeeds.
+function classifyProduction(trial, expected) {
+  if (!trial.result || trial.result.status !== "completed") {
+    return {
+      verdict: "turn_error",
+      detail: JSON.stringify(trial.result ?? trial.error),
+      calls: []
+    };
+  }
+  const parts = trial.messages
+    .filter((m) => m.role === "assistant")
+    .flatMap((m) => m.parts);
+  const tools = parts.filter((p) => p.type.startsWith("tool-"));
+  const calls = tools.map((p) => ({
+    name: p.type.slice(5),
+    input: p.input,
+    state: p.state
+  }));
+  const text = parts
+    .filter((p) => p.type === "text")
+    .map((p) => p.text)
+    .join("\n");
+  if (expected === null) {
+    return {
+      verdict: calls.length ? "tool_called_anyway" : "answered_without_tool",
+      detail: calls.map((c) => c.name).join(","),
+      calls,
+      text
+    };
+  }
+  const hit = calls.find(
+    (c) =>
+      READ_TOOLS.has(c.name) &&
+      norm(c.input?.hostname) === expected &&
+      c.state === "output-available"
+  );
+  return {
+    verdict: hit ? "good" : calls.length ? "wrong_call" : "no_tool_call",
+    detail: `${calls.map((c) => c.name).join(",")} answered=${text.trim().length > 0}`,
+    calls,
+    text
+  };
+}
+
 async function runTrial(i, prompt, expected) {
+  if (MODE === "production") {
+    try {
+      const res = await fetch(
+        `http://localhost:${PORT}/trial?id=${runId}-${i}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ prompt, seed: [expected ?? "shop.acme.io"] })
+        }
+      );
+      const trial = res.ok
+        ? await res.json()
+        : { error: `HTTP ${res.status} ${await res.text()}` };
+      return { ...classifyProduction(trial, expected), ms: trial.ms ?? null };
+    } catch (err) {
+      return {
+        verdict: "turn_error",
+        detail: String(err),
+        calls: [],
+        ms: null
+      };
+    }
+  }
   if (MODE === "agent") {
     let trial;
     try {
@@ -267,16 +333,24 @@ const plainRows = [];
 try {
   await waitForReady(proc);
   for (const [i, [prompt, expected]] of TRIALS.entries()) {
-    const { verdict, detail, text, ms } = await runTrial(i, prompt, expected);
-    rows.push({ i, prompt, expected, verdict, detail, text, ms });
+    const { verdict, detail, text, calls, ms } = await runTrial(
+      i,
+      prompt,
+      expected
+    );
+    rows.push({ i, prompt, expected, verdict, detail, text, calls, ms });
     console.log(
       `${String(i + 1).padStart(2)} ${verdict.padEnd(26)} ${ms ?? "-"}ms  ${prompt}`
     );
   }
   for (const [j, prompt] of PLAIN.entries()) {
     const i = TRIALS.length + j;
-    const { verdict, detail, text, ms } = await runTrial(i, prompt, null);
-    plainRows.push({ i, prompt, verdict, detail, text, ms });
+    const { verdict, detail, text, calls, ms } = await runTrial(
+      i,
+      prompt,
+      null
+    );
+    plainRows.push({ i, prompt, verdict, detail, text, calls, ms });
     console.log(`P${j + 1} ${verdict.padEnd(26)} ${ms ?? "-"}ms  ${prompt}`);
   }
 } finally {
@@ -304,6 +378,14 @@ const summary = {
   byVerdict,
   medianMs: median,
   maxMs: latencies.at(-1) ?? null,
+  // Hostname turns with more than one tool call, and with the same call repeated.
+  multiCallTurns: rows.filter((r) => (r.calls?.length ?? 0) > 1).length,
+  repeatedSameCall: rows.filter((r) => {
+    const keys = (r.calls ?? []).map(
+      (c) => `${c.name}:${JSON.stringify(c.input)}`
+    );
+    return new Set(keys).size < keys.length;
+  }).length,
   plain: {
     total: plainRows.length,
     toolCalledAnyway: plainRows.filter(

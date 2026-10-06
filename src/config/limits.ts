@@ -10,7 +10,27 @@ export const LIMITS = {
     // Messages kept in TenantAgent storage. Older ones are dropped by AIChatAgent.
     maxPersistedMessages: 100,
     // Longest user message accepted from the browser, in characters.
-    maxUserMessageChars: 4000
+    maxUserMessageChars: 4000,
+    temperature: 0.2,
+    maxOutputTokens: 1024,
+    // The model's real context window (Workers AI model page). Budgets below fit well inside.
+    contextWindowTokens: 24_000,
+    systemPromptMaxTokens: 600,
+    stateMaxTokens: 1500,
+    historyMessages: 12,
+    historyMaxTokens: 6000,
+    // No Llama tokenizer runs in the Worker, so token counts are estimated conservatively.
+    charsPerToken: 3,
+    firstTokenMs: 10_000,
+    totalMs: 30_000,
+    // One retry before the first token on a 5xx or timeout.
+    retriesBeforeFirstToken: 1,
+    // The second invalid tool call in a turn ends it with a fixed message.
+    maxInvalidToolCalls: 2,
+    // One turn per visitor. The lease expires on its own only as a backstop.
+    leaseMs: 60_000,
+    // explain_findings runs a fresh DNS check when the saved one is older than this.
+    findingsFreshMs: 5 * 60 * 1000
   },
   session: {
     ttlSeconds: 30 * DAY_SECONDS,

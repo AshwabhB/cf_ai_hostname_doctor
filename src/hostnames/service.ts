@@ -87,6 +87,8 @@ export type ServiceDeps = {
   // Asks the HostnameRegistry for a fresh, never reused generation.
   register(hostname: string): Promise<number>;
   now(): number;
+  // FALLBACK_ORIGIN. It and every name under it cannot be added as custom hostnames.
+  serviceZone?: string;
 };
 
 const err = <E extends ServiceError>(e: E) => ({ ok: false as const, ...e });
@@ -232,6 +234,19 @@ export class HostnameService {
     };
   }
 
+  // The live row for a hostname as a person or the model would type it.
+  findLive(input: string): HostnameView | null {
+    const normalized = normalizeHostname(input);
+    if (!normalized.ok) return null;
+    const row = this.sql
+      .exec<Row>(
+        "SELECT id, hostname, generation, state, version, verify_token, created_at, updated_at FROM hostnames WHERE hostname = ? AND state <> 'deleted'",
+        normalized.ascii
+      )
+      .toArray()[0];
+    return row ? toView(row) : null;
+  }
+
   get(id: string): Result<{ hostname: HostnameView }> {
     const row = this.row(id);
     return row
@@ -315,7 +330,9 @@ export class HostnameService {
     const early = this.replay(input.idempotencyKey, input.requestHash);
     if (early) return early;
 
-    const normalized = normalizeHostname(input.hostname);
+    const normalized = normalizeHostname(input.hostname, {
+      serviceZone: this.deps.serviceZone
+    });
     if (!normalized.ok) {
       return err({
         error: "invalid-hostname",

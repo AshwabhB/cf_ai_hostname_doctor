@@ -403,3 +403,17 @@ describe("production config", () => {
     );
   });
 });
+
+describe("service zone", () => {
+  it("refuses FALLBACK_ORIGIN and names under it as custom hostnames", async () => {
+    const v = await visitor();
+    for (const hostname of [
+      "hostname-doctor.bhatnagarashwabh.workers.dev",
+      "shop.hostname-doctor.bhatnagarashwabh.workers.dev"
+    ]) {
+      const res = await post(v, { hostname });
+      const body = (await problemOf(res, 400)) as { detail?: string };
+      expect(body.detail).toContain("belongs to the service");
+    }
+  });
+});
