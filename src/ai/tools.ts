@@ -215,7 +215,7 @@ export function buildTools(ctx?: ToolContext): ToolSet {
       execute: async ({ hostname }) => {
         const view = hostnames.findLive(hostname);
         if (!view) return notFound(hostname);
-        const result = hostnames.retry(view.id, "model");
+        const result = await hostnames.retry(view.id, "model");
         return result.ok
           ? {
               retried: true,

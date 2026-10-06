@@ -96,6 +96,48 @@ export class DiagnosisService {
     });
   }
 
+  // Saves a diagnosis onto the same live generation. Used by the workflow, which has its
+  // own schedule and does not spend the visitor's hourly check budget.
+  save(
+    id: string,
+    generation: number,
+    result: Diagnosis,
+    checkedAtMs: number
+  ): Result<{ diagnosis: DiagnosisView }> {
+    return this.storage.transactionSync(() => {
+      const current = this.row(id);
+      if (!current || current.generation !== generation) {
+        return { ok: false as const, error: "not-found" as const };
+      }
+      if (current.state === "deleting" || current.state === "deleted") {
+        return { ok: false as const, error: "invalid-transition" as const };
+      }
+      const checkedAt = Math.max(
+        checkedAtMs,
+        (current.last_checked_at ?? 0) + 1
+      );
+      const findingsJson = JSON.stringify({
+        verifiable: result.verifiable,
+        findings: result.findings
+      });
+      this.storage.sql.exec(
+        "UPDATE hostnames SET findings_json = ?, last_checked_at = ? WHERE id = ? AND generation = ?",
+        findingsJson,
+        checkedAt,
+        id,
+        generation
+      );
+      return {
+        ok: true as const,
+        diagnosis: toView({
+          ...current,
+          findings_json: findingsJson,
+          last_checked_at: checkedAt
+        })
+      };
+    });
+  }
+
   async check(id: string): Promise<Result<{ diagnosis: DiagnosisView }>> {
     const row = this.row(id);
     if (!row) return { ok: false, error: "not-found" };
@@ -110,39 +152,8 @@ export class DiagnosisService {
       token: row.verify_token
     });
 
-    // The row may have been deleted while DNS was in flight. Only save onto the same,
-    // still-live row. The checked time only moves forward, so the ETag always changes.
-    return this.storage.transactionSync(() => {
-      const current = this.row(id);
-      if (!current || current.generation !== row.generation) {
-        return { ok: false as const, error: "not-found" as const };
-      }
-      if (current.state === "deleting" || current.state === "deleted") {
-        return { ok: false as const, error: "invalid-transition" as const };
-      }
-      const checkedAt = Math.max(
-        this.deps.now(),
-        (current.last_checked_at ?? 0) + 1
-      );
-      const findingsJson = JSON.stringify({
-        verifiable: result.verifiable,
-        findings: result.findings
-      });
-      this.storage.sql.exec(
-        "UPDATE hostnames SET findings_json = ?, last_checked_at = ? WHERE id = ? AND generation = ?",
-        findingsJson,
-        checkedAt,
-        id,
-        row.generation
-      );
-      return {
-        ok: true as const,
-        diagnosis: toView({
-          ...current,
-          findings_json: findingsJson,
-          last_checked_at: checkedAt
-        })
-      };
-    });
+    // The row may have been deleted while DNS was in flight. save() only writes onto
+    // the same, still-live generation.
+    return this.save(id, row.generation, result, this.deps.now());
   }
 }

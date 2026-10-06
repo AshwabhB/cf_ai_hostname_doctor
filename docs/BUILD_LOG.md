@@ -319,3 +319,96 @@ Every chat request carried the full client message list and AIChatAgent saved it
   (S7).
 - On the add turn the model called `get_hostname` after `add_hostname`, which is redundant
   but harmless.
+
+## S6. Workflow and registry (2026-10-06)
+
+**Changed.**
+- `VerifyWorkflow` (src/workflow/verify.ts) extends the SDK's `AgentWorkflow`, so it gets a
+  typed RPC stub to the visitor's TenantAgent. Steps: `load`, then per attempt `dns-i`,
+  `record-i` and `sleep-i`, then `claim`, `settle` and `activate`, or `give-up`. The token,
+  timestamps and DNS answers are all produced inside steps. `runWorkflow` gets an explicit
+  `agentBinding`, so routing does not depend on class names surviving the build.
+- Backoff of 30 s, 1 m, 2 m and 5 m, then 10 m, giving up after 24 h of sleeps, counted as
+  attempts (149 attempts, 148 sleeps). Worst case is 450 steps against the Workflows limit
+  of 1,024 per instance on Free (10,000 default on Paid). A test keeps it under half of
+  1,024.
+- `HostnameRegistry` (src/hostnames/registry.ts): `register`, `claim`, `release`, `owner`.
+  First verified claim wins. A same-tenant claim at an older generation is replaced.
+- `HostnameLifecycle` (src/hostnames/lifecycle.ts): starts runs on create and retry, handles
+  the workflow callbacks (idempotent when repeated, fenced by generation), deletes
+  (terminate, release, deleted), and reconciles every row of the section 6 table. Server
+  `setState` pushes the hostname summary after every change. The reconcile schedule
+  exists only while a visitor has rows that need it.
+- Instance ids are `<sid>-<hostnameId>-g<generation>-r<run>`. Workflows ids allow only
+  letters, digits, `-` and `_` (up to 100 characters), so DESIGN.md section 6 was corrected
+  from the dotted form.
+- Migrations 4 and 5: `workflow_run`, `certificate_json`, `registry_released` and
+  `workflow_started_at`.
+- `test/setup.ts` blocks outbound fetch in unit tests, now that every create starts a real
+  workflow.
+
+**Found while building.**
+- `Agent` already has a `lifecycle` property, so the getter is `hostnameLifecycle`.
+- RPC results are disposable stubs, so steps copy plain fields out before returning.
+- Two gaps in my own first version, fixed before testing:
+  - a repeated `settle` would have stopped the run before `activate`
+  - a claim granted just before a delete would have leaked
+- The local engine ignores falsy mocked step results (`mockStepResult(..., null)` does
+  nothing), and a mocked error never runs the step body. So "a step running twice" is
+  tested by making the first real call of `claim`, `settle` and `activate` commit and then
+  throw. The test asserts each ran exactly twice and the events show one verified and one
+  active.
+
+**Incident during the live run, and the fix.** The live run on
+`shop.ashwabh-demo.duckdns.org` recorded attempts at 20:47, 20:47:35, 20:48:35, 20:50:35
+and 20:55:36, all `TXT_MISMATCH` on the old `hd-test-123`. During the following 10-minute
+sleep the local Workers runtime crashed at 21:01:22 and Vite restarted it. The engine's
+stored queue still held the wake-up for 21:05:36, but its alarm table was empty, so the
+instance never woke. It kept reporting itself as in progress. Reconcile did run at 21:07
+and 21:17 (the schedule row was fine), but it trusted that status and skipped the row.
+Fix: reconcile now uses our own heartbeat. A pending row whose last recorded attempt and
+run start are both more than 15 minutes old has a stalled instance, whatever the engine
+says. Reconcile terminates it and starts the next run. Migration 5 adds
+`workflow_started_at`, so a fresh retry is never mistaken for a stall. Regression test:
+age a sleeping run's heartbeat, then reconcile. It must report the row as stalled and
+restarted, and run 1 must be terminated. With the stall check disabled the test fails
+(`stalled` is empty). A second test leaves a healthy sleeping run alone.
+
+**Checks run.**
+- unit and fixture: typecheck, lint, 431 tests pass. Workflow tests (18) cover:
+  - the happy path to `active` with a simulated certificate, the claim and the state push
+  - the network guard covering workflows
+  - steps that commit and then lose their result
+  - delete during polling (instance terminated, row deleted, nothing to release)
+  - delete of an active hostname (claim released, another visitor then verifies it)
+  - late steps after delete and re-add
+  - two visitors racing for one claim
+  - adopting an instance whose id was not recorded
+  - restarting a gone or stalled instance
+  - a leftover claim
+  - registry drift to `conflict`
+  - a stuck delete
+  - give-up after all 149 attempts, then retry to `active`
+- unit, mutation checks: removing the generation fence makes the late-step test fail.
+  Removing first-claim-wins makes the race test fail. Removing settle idempotency makes the
+  double-run test fail. Disabling the stall check makes the regression test fail. All
+  restored.
+- live, local dev (real DNS, local Workflows engine), 2026-10-06: after the TXT was set
+  and the fix loaded, the worker reload woke the visitor's DO, `onStart` reconcile found
+  run 1 stalled, terminated it, and started run 2. Run 2 did `load`, `dns-0` (verifiable,
+  only `CNAME_MISSING` as a warning), `record-0`, `claim` (granted), `settle` and `activate`
+  between 21:23:06 and 21:23:07Z. The row reached `active` with a simulated certificate
+  (`not_after` 2027-01-04). Events: pending (user) at 20:47:03, verified (system) and
+  active (system) at 21:23:07.
+- deployed: not run.
+
+**Open issues.**
+- Test runs print "hung" and "User called terminate" lines from workflows still sleeping
+  when a test ends. They are noise from the local engine, not failures.
+- The DuckDNS TXT is now `8b130507b9b7ded3fd7df1fa2f75f393`, so the opt-in live DNS test
+  needs `LIVE_DUCKDNS_TXT` set to that value.
+- The S5 smoke-test row for `ashwabh-demo.duckdns.org` (a different local visitor) was also
+  stalled by the crash. Its reconcile restarts it on its next wake, but its token no longer
+  matches the DuckDNS TXT, so it will keep polling and then fail. Local data only.
+- A stalled instance that somehow resumed would still pass the generation fence, because
+  runs share a generation. Every callback is idempotent, so the outcome is the same.

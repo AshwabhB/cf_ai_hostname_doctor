@@ -67,6 +67,26 @@ export const LIMITS = {
     maxStringChars: 255,
     maxRecordsPerName: 10
   },
+  verify: {
+    // Sleeps between DNS attempts: these first, then steadyBackoffSeconds.
+    backoffSeconds: [30, 60, 120, 300],
+    steadyBackoffSeconds: 600,
+    // Stop once the sleeps add up to this. Counted in attempts, not wall-clock time, so
+    // replays and skipped sleeps behave the same. 24 h is 149 attempts and 148 sleeps.
+    giveUpAfterSeconds: 24 * 60 * 60,
+    // Workflows allow 1,024 steps per instance on Free (10,000 default on Paid).
+    // A test keeps the worst case under half of the Free limit.
+    stepLimitFloor: 1024,
+    // A healthy run records an attempt at least every steadyBackoffSeconds, plus the time
+    // one DNS attempt takes. A pending row with no attempt and no run start for this long
+    // has a stalled instance, whatever status the engine reports for it.
+    stalledAfterMs: 15 * 60 * 1000,
+    // A row stuck in deleting this long is finished by reconcile.
+    deletingStuckMs: 2 * 60 * 1000,
+    reconcileEverySeconds: 600,
+    // Simulated certificates. Nothing is issued by a real CA.
+    certificateDays: 90
+  },
   checks: {
     // Manual DNS checks per visitor, counted in TenantAgent over a sliding hour.
     perVisitorPerHour: 30

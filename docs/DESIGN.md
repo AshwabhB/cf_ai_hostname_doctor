@@ -103,8 +103,9 @@ Errors are RFC 9457 `application/problem+json` with `type`, `title`, `status`, `
 ## 6. VerifyWorkflow
 
 Params: `{ tenantId, hostnameId, hostname, generation, run }`. Instance id is
-`${tenantId}.${hostnameId}.${generation}.${run}`, so a duplicate start fails and is
-treated as "already running". The workflow holds no state of its own.
+`${tenantId}-${hostnameId}-g${generation}-r${run}` (Workflows ids allow only letters,
+digits, `-` and `_`), so a duplicate start fails and is treated as "already running".
+The workflow holds no state of its own.
 
 | Step                | Does                                                   | Safe to run twice because                          |
 |---------------------|--------------------------------------------------------|----------------------------------------------------|
@@ -130,6 +131,7 @@ ownership. A reconcile pass runs on a TenantAgent alarm (interval in limits.ts) 
 | row verified or active, registry owner is someone else    | system transition to `conflict`              |
 | registry owned by this tenant, row deleted or newer generation | `registry.release(tenantId, oldGeneration)` |
 | row pending, workflow errored, terminated or missing      | start run `run + 1`                          |
+| row pending, instance reported live but no attempt or run start for 15 min | terminate it, start run `run + 1` |
 | row deleting longer than the threshold                    | retry release, then CAS to deleted           |
 | workflow step writes with an old generation               | rejected by the guard, logged, no change     |
 

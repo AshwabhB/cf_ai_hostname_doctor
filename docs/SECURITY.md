@@ -171,3 +171,19 @@ path to Workers AI, was never called.
 - `AI_KILL_SWITCH="true"` (a plain var) answers with a fixed message and never creates a
   model.
 - `FALLBACK_ORIGIN` and every name under it are refused as custom hostnames.
+
+## Verification workflow and registry
+
+- Only code decides verification. `VerifyWorkflow` runs the S4 rules inside steps, then
+  asks the `HostnameRegistry` for the claim. First verified claim wins: another visitor's
+  claim gives `conflict`.
+- Every call from the workflow back into TenantAgent carries the generation. A late step
+  for a deleted or re-added hostname is refused and writes nothing. The workflow callbacks
+  (`wfLoad`, `wfRecord`, `wfSettle`, `wfActivate`, `wfGiveUp`) are plain RPC methods, not
+  `@callable`, so a browser cannot reach them (the frame guard refuses unlisted RPC).
+- Certificates are simulated: `certificate.simulated: true`, issuer "Simulated". Nothing
+  is issued by a real certificate authority.
+- Delete stops the workflow, releases the claim, and only then marks the row deleted.
+  Reconcile finishes any delete that stalls and releases claims left by deleted rows.
+- Unit tests never reach the network: `test/setup.ts` replaces `fetch` with a guard, and a
+  test proves the workflow's DoH calls are refused unless a fixture is installed.

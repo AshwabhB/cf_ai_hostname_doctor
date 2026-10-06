@@ -4,12 +4,7 @@ import {
   type OnChatMessageOptions
 } from "@cloudflare/ai-chat";
 import { callable, type Connection, type WSMessage } from "agents";
-import {
-  DurableObject,
-  WorkflowEntrypoint,
-  type WorkflowEvent,
-  type WorkflowStep
-} from "cloudflare:workers";
+import { readSummaries, type HostnameSummary } from "./ai/context";
 import { TurnLease } from "./ai/lease";
 import { runTurn } from "./ai/turn";
 import { LIMITS } from "./config/limits";
@@ -17,10 +12,13 @@ import { SESSION_EXPIRED_CLOSE } from "./config/protocol";
 import { SqlDnsCache } from "./dns/cache";
 import { diagnose } from "./dns/diagnose";
 import { DohClient, defaultDohDeps } from "./dns/doh";
+import type { Diagnosis } from "./dns/diagnose";
 import { DiagnosisService } from "./hostnames/diagnosis";
+import { HostnameLifecycle, type WorkflowStatus } from "./hostnames/lifecycle";
 import { migrate } from "./hostnames/schema";
 import {
   HostnameService,
+  type CommitEvent,
   type CreateInput,
   type HostnameView,
   type Result
@@ -37,7 +35,15 @@ function sendError(connection: Connection, status: number, title: string) {
   connection.send(JSON.stringify({ type: "hd_error", status, title }));
 }
 
-export class TenantAgent extends AIChatAgent<Env> {
+// Pushed to the visitor's own sockets with server setState after every change.
+export type TenantState = {
+  hostnames: HostnameSummary[];
+  updated_at: string | null;
+};
+
+export class TenantAgent extends AIChatAgent<Env, TenantState> {
+  initialState: TenantState = { hostnames: [], updated_at: null };
+
   // The instance name is the visitor's sid. The browser never needs it.
   static options = { sendIdentityOnConnect: false };
 
@@ -48,6 +54,7 @@ export class TenantAgent extends AIChatAgent<Env> {
   private migrated = false;
   private _hostnames: HostnameService | null = null;
   private _diagnoses: DiagnosisService | null = null;
+  private _hostnameLifecycle: HostnameLifecycle | null = null;
   // Time limits for one model call. A field so tests can shorten them.
   chatTimeouts: { firstChunkMs: number; totalMs: number } = {
     firstChunkMs: LIMITS.chat.firstTokenMs,
@@ -138,6 +145,8 @@ export class TenantAgent extends AIChatAgent<Env> {
   async onStart(props?: object) {
     await super.onStart(props);
     this.ensureSchema();
+    // Reconcile on start, in the background so the first request is not held up.
+    this.ctx.waitUntil(this.reconcile());
   }
 
   private ensureSchema() {
@@ -153,9 +162,117 @@ export class TenantAgent extends AIChatAgent<Env> {
       register: (hostname) =>
         this.env.HostnameRegistry.getByName(hostname).register(),
       now: () => Date.now(),
-      serviceZone: this.env.FALLBACK_ORIGIN
+      serviceZone: this.env.FALLBACK_ORIGIN,
+      onCommitted: (event) => this.onHostnameCommitted(event)
     });
     return this._hostnames;
+  }
+
+  // Not named lifecycle: Agent already has a lifecycle property.
+  private get hostnameLifecycle(): HostnameLifecycle {
+    this._hostnameLifecycle ??= new HostnameLifecycle({
+      tenantId: this.name,
+      hostnames: this.hostnames,
+      diagnoses: this.diagnoses,
+      registry: (hostname) => {
+        const stub = this.env.HostnameRegistry.getByName(hostname);
+        return {
+          claim: (tenant, generation) => stub.claim(tenant, generation),
+          release: (tenant, generation) => stub.release(tenant, generation),
+          owner: () => stub.owner()
+        };
+      },
+      startWorkflow: async (id, params) => {
+        // agentBinding is explicit so routing never depends on class names surviving
+        // minification in the production build.
+        await this.runWorkflow("VERIFY_WORKFLOW", params, {
+          id,
+          agentBinding: "TenantAgent"
+        });
+      },
+      terminateWorkflow: async (id) => {
+        const instance = await this.env.VERIFY_WORKFLOW.get(id);
+        await instance.terminate();
+      },
+      workflowStatus: async (id): Promise<WorkflowStatus> => {
+        try {
+          const instance = await this.env.VERIFY_WORKFLOW.get(id);
+          return (await instance.status()).status;
+        } catch {
+          return "missing";
+        }
+      },
+      now: () => Date.now()
+    });
+    return this._hostnameLifecycle;
+  }
+
+  private async onHostnameCommitted(event: CommitEvent) {
+    this.publishState();
+    if (event.kind === "created" || event.kind === "retried") {
+      await this.hostnameLifecycle.startVerification(event.hostname.id);
+      await this.ensureReconcileSchedule();
+    }
+  }
+
+  // Server-side setState only. Clients can never write state (validateStateChange).
+  private publishState() {
+    this.setState({
+      hostnames: readSummaries(this.ctx.storage.sql, this.env.FALLBACK_ORIGIN),
+      updated_at: new Date().toISOString()
+    });
+  }
+
+  // Reconcile runs every 10 minutes only while this visitor has rows that need it.
+  private async ensureReconcileSchedule() {
+    await this.scheduleEvery(LIMITS.verify.reconcileEverySeconds, "reconcile");
+  }
+
+  async reconcile() {
+    this.ensureSchema();
+    const report = await this.hostnameLifecycle.reconcile();
+    if (this.hostnames.reconcileRows().length === 0) {
+      for (const schedule of this.getSchedules()) {
+        if (schedule.callback === "reconcile")
+          await this.cancelSchedule(schedule.id);
+      }
+    } else {
+      await this.ensureReconcileSchedule();
+    }
+    if (
+      report.restarted.length +
+        report.conflicted.length +
+        report.finishedDeletes.length >
+      0
+    ) {
+      this.publishState();
+    }
+    return report;
+  }
+
+  // ---- VerifyWorkflow callbacks over RPC. Not @callable, so browsers cannot reach them.
+  wfLoad(hostnameId: string, generation: number) {
+    return this.hostnameLifecycle.load(hostnameId, generation);
+  }
+
+  wfRecord(
+    hostnameId: string,
+    generation: number,
+    diagnosis: Diagnosis & { checkedAt: number }
+  ) {
+    return this.hostnameLifecycle.record(hostnameId, generation, diagnosis);
+  }
+
+  wfGiveUp(hostnameId: string, generation: number) {
+    return this.hostnameLifecycle.giveUp(hostnameId, generation);
+  }
+
+  wfSettle(hostnameId: string, generation: number, granted: boolean) {
+    return this.hostnameLifecycle.settle(hostnameId, generation, granted);
+  }
+
+  wfActivate(hostnameId: string, generation: number, issuedAtMs: number) {
+    return this.hostnameLifecycle.activate(hostnameId, generation, issuedAtMs);
   }
 
   private get diagnoses(): DiagnosisService {
@@ -194,7 +311,7 @@ export class TenantAgent extends AIChatAgent<Env> {
   }
 
   apiDelete(id: string, etag: string) {
-    return this.hostnames.delete(id, etag, "user");
+    return this.hostnameLifecycle.delete(id, etag);
   }
 
   apiRetry(id: string) {
@@ -211,13 +328,16 @@ export class TenantAgent extends AIChatAgent<Env> {
 
   // Browser-callable. Arguments are schema-checked by the frame guard (CALLABLES).
   @callable()
-  confirmDelete(id: string, etag: string): Result<{ hostname: HostnameView }> {
-    return this.hostnames.delete(id, etag, "user");
+  confirmDelete(
+    id: string,
+    etag: string
+  ): Promise<Result<{ hostname: HostnameView }>> {
+    return this.hostnameLifecycle.delete(id, etag);
   }
 
   // Named retryHostname because Agent already has a retry() helper.
   @callable()
-  retryHostname(id: string): Result<{ hostname: HostnameView }> {
+  retryHostname(id: string): Promise<Result<{ hostname: HostnameView }>> {
     return this.hostnames.retry(id, "user");
   }
 
@@ -247,60 +367,8 @@ export class TenantAgent extends AIChatAgent<Env> {
   }
 }
 
-// One per normalized hostname. S3 only hands out generations. Claim and release
-// arrive in S6 and use the owner columns.
-export class HostnameRegistry extends DurableObject<Env> {
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS ownership (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      next_generation INTEGER NOT NULL,
-      owner_tenant TEXT,
-      owner_generation INTEGER,
-      updated_at INTEGER NOT NULL
-    )`);
-  }
-
-  // Returns a fresh generation for this hostname. Monotonic and never reused.
-  register(): number {
-    const sql = this.ctx.storage.sql;
-    return this.ctx.storage.transactionSync(() => {
-      sql.exec(
-        "INSERT OR IGNORE INTO ownership (id, next_generation, updated_at) VALUES (1, 1, ?)",
-        Date.now()
-      );
-      const { next_generation } = sql
-        .exec<{ next_generation: number }>(
-          "SELECT next_generation FROM ownership WHERE id = 1"
-        )
-        .one();
-      sql.exec(
-        "UPDATE ownership SET next_generation = ?, updated_at = ? WHERE id = 1",
-        next_generation + 1,
-        Date.now()
-      );
-      return next_generation;
-    });
-  }
-}
-
-export type VerifyParams = {
-  tenantId: string;
-  hostnameId: string;
-  hostname: string;
-  generation: number;
-  run: number;
-};
-
-// Background DNS verification. Implemented in S6.
-export class VerifyWorkflow extends WorkflowEntrypoint<Env, VerifyParams> {
-  async run(
-    _event: WorkflowEvent<VerifyParams>,
-    _step: WorkflowStep
-  ): Promise<never> {
-    throw new Error("VerifyWorkflow is not implemented until S6");
-  }
-}
+export { HostnameRegistry } from "./hostnames/registry";
+export { VerifyWorkflow, type VerifyParams } from "./workflow/verify";
 
 export default {
   fetch: handleRequest

@@ -1,6 +1,11 @@
 // POST /check and GET /diagnosis through the real Worker and TenantAgent, with the one
 // outbound fetch (DoH) answered by the fixture resolver.
-import { SELF, env, runInDurableObject } from "cloudflare:test";
+import {
+  SELF,
+  env,
+  introspectWorkflow,
+  runInDurableObject
+} from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LIMITS } from "../src/config/limits";
 import { DiagnosisService } from "../src/hostnames/diagnosis";
@@ -14,6 +19,18 @@ const FALLBACK = "hostname-doctor.bhatnagarashwabh.workers.dev";
 
 let zone: Zone = {};
 let calls: string[] = [];
+let introspector: Awaited<ReturnType<typeof introspectWorkflow>> | null = null;
+
+// These tests are about manual checks. The verification workflow that create starts is
+// stopped at its first step, so it cannot move the row while a test looks at it.
+beforeEach(async () => {
+  introspector = await introspectWorkflow(env.VERIFY_WORKFLOW);
+  await introspector.modifyAll(async (m) => {
+    // The local engine ignores falsy mocked results, so the first step is made to fail
+    // instead. The workflow stays parked retrying it and never touches the row.
+    await m.mockStepError({ name: "load" }, new Error("parked by test"), 20);
+  });
+});
 
 beforeEach(() => {
   zone = {};
@@ -24,9 +41,11 @@ beforeEach(() => {
     return res;
   });
 });
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   calls = [];
+  await introspector?.dispose();
+  introspector = null;
 });
 
 type HostnameView = {

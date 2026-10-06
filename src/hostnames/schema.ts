@@ -69,7 +69,17 @@ const MIGRATIONS: readonly string[][] = [
       holder TEXT NOT NULL,
       expires_at INTEGER NOT NULL
     )`
-  ]
+  ],
+  // 4: verification workflow runs, simulated certificates, and registry release tracking.
+  [
+    `ALTER TABLE hostnames ADD COLUMN workflow_run INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE hostnames ADD COLUMN certificate_json TEXT`,
+    `ALTER TABLE hostnames ADD COLUMN registry_released INTEGER NOT NULL DEFAULT 0`,
+    // reconcile: deleted rows whose registry claim may still need releasing
+    `CREATE INDEX hostnames_unreleased ON hostnames (registry_released, state)`
+  ],
+  // 5: when the current workflow run started, for reconcile's stall check.
+  [`ALTER TABLE hostnames ADD COLUMN workflow_started_at INTEGER`]
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

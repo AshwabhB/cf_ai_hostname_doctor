@@ -26,8 +26,40 @@ type Row = {
   state: HostnameState;
   version: number;
   verify_token: string;
+  certificate_json: string | null;
   created_at: number;
   updated_at: number;
+};
+
+const ROW_COLUMNS =
+  "id, hostname, generation, state, version, verify_token, certificate_json, created_at, updated_at";
+
+// Simulated certificates only. Nothing is ever issued by a real certificate authority.
+export type CertificateView = {
+  simulated: true;
+  issuer: "Simulated";
+  issued_at: string;
+  not_after: string;
+};
+
+// What reconcile and the workflow need beyond the public view.
+export type WorkflowRow = {
+  id: string;
+  hostname: string;
+  generation: number;
+  state: HostnameState;
+  verify_token: string;
+  workflow_instance_id: string | null;
+  workflow_run: number;
+  workflow_started_at: number | null;
+  last_checked_at: number | null;
+  registry_released: number;
+  updated_at: number;
+};
+
+export type CommitEvent = {
+  kind: "created" | "retried" | "transitioned";
+  hostname: HostnameView;
 };
 
 type EventRow = {
@@ -48,6 +80,7 @@ export type HostnameView = {
   version: number;
   etag: string;
   verification: { txt_name: string; txt_value: string };
+  certificate: CertificateView | null;
   created_at: string;
   updated_at: string;
 };
@@ -89,6 +122,9 @@ export type ServiceDeps = {
   now(): number;
   // FALLBACK_ORIGIN. It and every name under it cannot be added as custom hostnames.
   serviceZone?: string;
+  // Called after a create, retry or transition commits. TenantAgent uses it to start the
+  // verification workflow and to push the hostname summary to open sockets.
+  onCommitted?: (event: CommitEvent) => void | Promise<void>;
 };
 
 const err = <E extends ServiceError>(e: E) => ({ ok: false as const, ...e });
@@ -124,6 +160,9 @@ function toView(row: Row): HostnameView {
       txt_name: `${TXT_PREFIX}.${row.hostname}`,
       txt_value: row.verify_token
     },
+    certificate: row.certificate_json
+      ? (JSON.parse(row.certificate_json) as CertificateView)
+      : null,
     created_at: new Date(row.created_at).toISOString(),
     updated_at: new Date(row.updated_at).toISOString()
   };
@@ -179,10 +218,7 @@ export class HostnameService {
     if (!ID_PATTERN.test(id)) return null;
     return (
       this.sql
-        .exec<Row>(
-          "SELECT id, hostname, generation, state, version, verify_token, created_at, updated_at FROM hostnames WHERE id = ?",
-          id
-        )
+        .exec<Row>(`SELECT ${ROW_COLUMNS} FROM hostnames WHERE id = ?`, id)
         .toArray()[0] ?? null
     );
   }
@@ -240,7 +276,7 @@ export class HostnameService {
     if (!normalized.ok) return null;
     const row = this.sql
       .exec<Row>(
-        "SELECT id, hostname, generation, state, version, verify_token, created_at, updated_at FROM hostnames WHERE hostname = ? AND state <> 'deleted'",
+        `SELECT ${ROW_COLUMNS} FROM hostnames WHERE hostname = ? AND state <> 'deleted'`,
         normalized.ascii
       )
       .toArray()[0];
@@ -269,7 +305,7 @@ export class HostnameService {
     const rows = after
       ? this.sql
           .exec<Row>(
-            `SELECT id, hostname, generation, state, version, verify_token, created_at, updated_at
+            `SELECT ${ROW_COLUMNS}
              FROM hostnames WHERE state <> 'deleted' AND (created_at, id) < (?, ?)
              ORDER BY created_at DESC, id DESC LIMIT ?`,
             after.c,
@@ -279,7 +315,7 @@ export class HostnameService {
           .toArray()
       : this.sql
           .exec<Row>(
-            `SELECT id, hostname, generation, state, version, verify_token, created_at, updated_at
+            `SELECT ${ROW_COLUMNS}
              FROM hostnames WHERE state <> 'deleted'
              ORDER BY created_at DESC, id DESC LIMIT ?`,
             limit + 1
@@ -322,6 +358,19 @@ export class HostnameService {
   }
 
   async create(
+    input: CreateInput
+  ): Promise<Result<{ hostname: HostnameView; replayed: boolean }>> {
+    const result = await this.createRow(input);
+    if (result.ok && !result.replayed) {
+      await this.deps.onCommitted?.({
+        kind: "created",
+        hostname: result.hostname
+      });
+    }
+    return result;
+  }
+
+  private async createRow(
     input: CreateInput
   ): Promise<Result<{ hostname: HostnameView; replayed: boolean }>> {
     if (!CREATE_ACTORS.includes(input.actor))
@@ -370,6 +419,7 @@ export class HostnameService {
         state: "pending",
         version: 1,
         verify_token: randomHex(16),
+        certificate_json: null,
         created_at: createdAt,
         updated_at: createdAt
       };
@@ -420,7 +470,32 @@ export class HostnameService {
     to: HostnameState,
     actor: Actor,
     expected: { generation: number; version: number },
-    reason: string | null = null
+    reason: string | null = null,
+    extra: { certificate?: CertificateView } = {}
+  ): Result<{ hostname: HostnameView }> {
+    const result = this.commitTransition(
+      id,
+      to,
+      actor,
+      expected,
+      reason,
+      extra
+    );
+    if (result.ok)
+      void this.deps.onCommitted?.({
+        kind: "transitioned",
+        hostname: result.hostname
+      });
+    return result;
+  }
+
+  private commitTransition(
+    id: string,
+    to: HostnameState,
+    actor: Actor,
+    expected: { generation: number; version: number },
+    reason: string | null,
+    extra: { certificate?: CertificateView }
   ): Result<{ hostname: HostnameView }> {
     return this.storage.transactionSync(() => {
       const row = this.row(id);
@@ -435,10 +510,14 @@ export class HostnameService {
         return err({ error: "invalid-transition" });
 
       const now = Math.max(this.deps.now(), row.updated_at);
+      const certificateJson = extra.certificate
+        ? JSON.stringify(extra.certificate)
+        : null;
       this.sql.exec(
-        "UPDATE hostnames SET state = ?, version = version + 1, updated_at = ? WHERE id = ? AND generation = ? AND version = ?",
+        "UPDATE hostnames SET state = ?, version = version + 1, updated_at = ?, certificate_json = COALESCE(?, certificate_json) WHERE id = ? AND generation = ? AND version = ?",
         to,
         now,
+        certificateJson,
         id,
         expected.generation,
         expected.version
@@ -456,21 +535,55 @@ export class HostnameService {
           ...row,
           state: to,
           version: row.version + 1,
+          certificate_json: certificateJson ?? row.certificate_json,
           updated_at: now
         })
       };
     });
   }
 
-  retry(id: string, actor: Actor): Result<{ hostname: HostnameView }> {
+  async retry(
+    id: string,
+    actor: Actor
+  ): Promise<Result<{ hostname: HostnameView }>> {
     const row = this.row(id);
     if (!row) return err({ error: "not-found" });
-    return this.transition(id, "pending", actor, row, "retry requested");
+    const result = this.transition(
+      id,
+      "pending",
+      actor,
+      row,
+      "retry requested"
+    );
+    if (result.ok)
+      await this.deps.onCommitted?.({
+        kind: "retried",
+        hostname: result.hostname
+      });
+    return result;
   }
 
-  // Deleting needs the caller's ETag. Nothing is claimed in the registry before S6,
-  // so the system moves the row from deleting to deleted straight away.
-  delete(
+  // A system move fenced by generation and by the state the caller expects. The version
+  // is read inside the same transaction, so a concurrent change makes this a no-op.
+  systemTransition(
+    id: string,
+    generation: number,
+    from: readonly HostnameState[],
+    to: HostnameState,
+    reason: string,
+    extra: { certificate?: CertificateView } = {}
+  ): Result<{ hostname: HostnameView }> {
+    const row = this.row(id);
+    if (!row) return err({ error: "not-found" });
+    if (row.generation !== generation) {
+      return err({ error: "precondition-failed", detail: "generation" });
+    }
+    if (!from.includes(row.state)) return err({ error: "invalid-transition" });
+    return this.transition(id, to, "system", row, reason, extra);
+  }
+
+  // First half of a delete: the caller's ETag moves the row to deleting.
+  beginDelete(
     id: string,
     etag: string,
     actor: Actor
@@ -481,20 +594,96 @@ export class HostnameService {
     if (version === null || version !== row.version) {
       return err({ error: "precondition-failed", detail: "version" });
     }
-    const deleting = this.transition(
+    return this.transition(
       id,
       "deleting",
       actor,
       { generation: row.generation, version },
       "delete confirmed"
     );
-    if (!deleting.ok) return deleting;
-    return this.transition(
+  }
+
+  // Second half, once the workflow is stopped and the registry claim released.
+  finishDelete(
+    id: string,
+    generation: number,
+    reason: string
+  ): Result<{ hostname: HostnameView }> {
+    const result = this.systemTransition(
       id,
+      generation,
+      ["deleting"],
       "deleted",
-      "system",
-      { generation: row.generation, version: deleting.hostname.version },
+      reason
+    );
+    if (result.ok) this.markReleased(id, generation);
+    return result;
+  }
+
+  // Both halves with nothing to stop or release in between. TenantAgent.deleteHostname
+  // is the production path, with the workflow and registry steps in the middle.
+  delete(
+    id: string,
+    etag: string,
+    actor: Actor
+  ): Result<{ hostname: HostnameView }> {
+    const deleting = this.beginDelete(id, etag, actor);
+    if (!deleting.ok) return deleting;
+    return this.finishDelete(
+      id,
+      deleting.hostname.generation,
       "nothing held in the registry"
+    );
+  }
+
+  workflowRow(id: string): WorkflowRow | null {
+    if (!ID_PATTERN.test(id)) return null;
+    return (
+      this.sql
+        .exec<WorkflowRow>(
+          `SELECT id, hostname, generation, state, verify_token, workflow_instance_id,
+                  workflow_run, workflow_started_at, last_checked_at, registry_released, updated_at
+           FROM hostnames WHERE id = ?`,
+          id
+        )
+        .toArray()[0] ?? null
+    );
+  }
+
+  // Rows reconcile must look at: everything live, and deleted rows whose registry claim
+  // has not been confirmed released.
+  reconcileRows(): WorkflowRow[] {
+    return this.sql
+      .exec<WorkflowRow>(
+        `SELECT id, hostname, generation, state, verify_token, workflow_instance_id,
+                workflow_run, workflow_started_at, last_checked_at, registry_released, updated_at
+         FROM hostnames WHERE state <> 'deleted' OR registry_released = 0`
+      )
+      .toArray();
+  }
+
+  setWorkflow(
+    id: string,
+    generation: number,
+    instanceId: string,
+    run: number
+  ): boolean {
+    this.sql.exec(
+      "UPDATE hostnames SET workflow_instance_id = ?, workflow_run = ?, workflow_started_at = ? WHERE id = ? AND generation = ?",
+      instanceId,
+      run,
+      this.deps.now(),
+      id,
+      generation
+    );
+    return this.sql.exec<{ n: number }>("SELECT changes() AS n").one().n === 1;
+  }
+
+  markReleased(id: string, generation: number): void {
+    this.sql.exec(
+      "UPDATE hostnames SET registry_released = 1 WHERE id = ? AND generation = ?",
+      id,
+      generation
     );
   }
 

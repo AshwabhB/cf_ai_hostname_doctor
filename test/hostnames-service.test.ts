@@ -427,16 +427,20 @@ describe("paging", () => {
 
 describe("retry and delete", () => {
   it("retries only from failed or conflict", async () => {
-    await withService(({ service, storage }) => {
-      expect(service.retry(seed(storage, "pending", 1), "user")).toMatchObject({
+    await withService(async ({ service, storage }) => {
+      expect(
+        await service.retry(seed(storage, "pending", 1), "user")
+      ).toMatchObject({
         error: "invalid-transition"
       });
-      expect(service.retry(seed(storage, "failed", 2), "user")).toMatchObject({
+      expect(
+        await service.retry(seed(storage, "failed", 2), "user")
+      ).toMatchObject({
         ok: true,
         hostname: { state: "pending" }
       });
       expect(
-        service.retry(seed(storage, "conflict", 3), "model")
+        await service.retry(seed(storage, "conflict", 3), "model")
       ).toMatchObject({ ok: true });
     });
   });
@@ -461,10 +465,10 @@ describe("retry and delete", () => {
   });
 
   it("treats unknown and malformed ids as not found", async () => {
-    await withService(({ service }) => {
+    await withService(async ({ service }) => {
       for (const id of ["hn_000000000000000000000000", "nope", "' OR 1=1 --"]) {
         expect(service.get(id)).toEqual({ ok: false, error: "not-found" });
-        expect(service.retry(id, "user")).toEqual({
+        expect(await service.retry(id, "user")).toEqual({
           ok: false,
           error: "not-found"
         });
@@ -482,7 +486,7 @@ describe("migrations", () => {
           "SELECT version FROM hd_schema_migrations ORDER BY version"
         )
         .toArray();
-      expect(versions.map((v) => v.version)).toEqual([1, 2, 3]);
+      expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5]);
     });
   });
 });
