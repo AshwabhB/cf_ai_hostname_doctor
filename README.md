@@ -16,9 +16,10 @@ Hostname Doctor is a chat agent for that moment. You add a customer hostname and
 - never decides verification itself. Plain code checks DNS. The model explains and calls
   tools, and it cannot verify, activate or delete anything.
 
-![Hostname Doctor: a hostname added from chat, its records, and the live table](docs/screenshots/1440-add-hostname.jpg)
+![Hostname Doctor on the live URL: a hostname added from chat, its records, and the live table](docs/screenshots/live-1440.jpg)
 
-**Live:** https://hostname-doctor.bhatnagarashwabh.workers.dev (deployed 2026-10-07)
+**Live:** https://hostname-doctor.bhatnagarashwabh.workers.dev (deployed 2026-10-07; manual
+browser test passed the same day)
 
 Built on Cloudflare Workers with the Agents SDK: Llama 3.3 70B (fp8-fast) on Workers AI,
 Durable Objects, Workflows and a React UI.

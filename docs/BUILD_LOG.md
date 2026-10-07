@@ -722,3 +722,33 @@ the user.
 - The `W/` tolerance fallback was not needed and was not added.
 - Still open: the S11 smoke row `www.example.com` ends `failed` after 24 hours; PROMPTS.md to
   be regenerated; the user's browser test.
+
+## Manual live test and card fix (2026-10-07)
+
+**Manual checks by the user on the deployed URL, 2026-10-07: all passed.**
+- The app loads and shows Connected. "what is a caa record" was answered with no tool card.
+- Added `live.ashwabh-demo.duckdns.org`, set the TXT, and it went pending to active live in
+  the table, with only `CNAME_MISSING` left.
+- A private window had its own empty workspace.
+- Delete showed the card and no dialog by itself; the dialog named the hostname, and the
+  row disappeared live.
+- The dashboard showed all bindings, the secret's name, redacted JSON logs and the workflow
+  instances.
+
+**Fix: the add card showed a stale state.** Chat tool cards showed the state the tool
+returned, so the add card still said pending after the hostname went active. Cards now
+show the hostname's state from the live table the server pushes. Once the hostname is gone
+they show the old state labeled "when added" (add) or "at the time" (other tools).
+- unit: 478 tests in 20 files. New: `cardState` picks the live state, falls back with the
+  label, and shows nothing for unknown states. The rendered card cannot be tested in the
+  pool (Kumo hooks, the same two-React problem as S7), so it was checked live.
+- Commit `2fd3893`, deployed 2026-10-07T03:11:00Z, version
+  `710251d1-4361-427a-b4d0-5294a5570458`. `/healthz` and `/` 200 afterwards.
+- deployed, in the browser pane as a fresh visitor: the starter prompt added
+  `shop.example.com` (one live turn); the card's badge matched the table. Asked to delete
+  it: card only, the dialog named the hostname, Delete removed the row. The old add card
+  then read "Pending when added". The throwaway row is gone and its workflow stopped.
+- New README screenshot from the live app: `docs/screenshots/live-1440.jpg`.
+
+**Still open.** PROMPTS.md to be regenerated now that deploy is done. The S11 smoke row
+`www.example.com` ends `failed` after 24 hours.
