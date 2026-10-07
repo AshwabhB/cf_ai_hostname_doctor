@@ -329,6 +329,29 @@ describe("security headers", () => {
   });
 });
 
+describe("assets routing", () => {
+  it("runs the Worker first for every path the router serves", () => {
+    const config = JSON.parse(wranglerConfig) as {
+      assets: { run_worker_first: string[] };
+    };
+    const first = config.assets.run_worker_first;
+    const covered = (path: string) =>
+      first.some((p) =>
+        p.endsWith("/*") ? path.startsWith(p.slice(0, -1)) : path === p
+      );
+    // Without this the assets layer answers with index.html and the Worker never runs.
+    for (const path of [
+      "/healthz",
+      "/api/v1/session",
+      "/api/v1/hostnames",
+      "/api/v1/hostnames/hn_0/check",
+      "/agents/tenant-agent/me"
+    ]) {
+      expect(covered(path), path).toBe(true);
+    }
+  });
+});
+
 describe("GET /healthz", () => {
   it("answers ok with no session, no model call and nothing about the account", async () => {
     const spy = spyOnModel();
