@@ -55,6 +55,7 @@ const STATUS: Record<ProblemType, number> = {
 };
 
 export const NO_STORE = "no-store";
+export const NO_TRANSFORM = "no-transform";
 
 // Detail strings are fixed per call site and never carry exception text.
 export function problem(

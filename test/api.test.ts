@@ -84,7 +84,7 @@ describe("POST /api/v1/hostnames", () => {
     });
     expect(res.headers.get("location")).toBe(`/api/v1/hostnames/${body.id}`);
     expect(res.headers.get("etag")).toBe(body.etag);
-    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("cache-control")).toBe("no-store, no-transform");
   });
 
   it("replays the same key and body, and refuses the same key with another body", async () => {
@@ -400,6 +400,11 @@ describe("callables over the WebSocket", () => {
 });
 
 describe("production config", () => {
+  it("turns off Preview URLs, which would serve the app from other origins", () => {
+    const config = JSON.parse(wranglerConfig) as { preview_urls?: boolean };
+    expect(config.preview_urls).toBe(false);
+  });
+
   it("trusts only the workers.dev origin", () => {
     const config = JSON.parse(wranglerConfig) as {
       vars: { ALLOWED_ORIGINS: string };
@@ -463,5 +468,49 @@ describe("attack inputs", () => {
     }
     const list = (await (await get(v)).json()) as { items: unknown[] };
     expect(list.items).toEqual([]);
+  });
+});
+
+describe("API responses keep a strong ETag", () => {
+  // The edge compresses JSON unless told not to, and compressing turns the ETag into
+  // W/"...". no-transform keeps it exactly as written, so If-Match and If-None-Match work.
+  const NO_STORE_NO_TRANSFORM = "no-store, no-transform";
+
+  it("sends no-store, no-transform on every API status", async () => {
+    const v = await visitor();
+    const created = await post(v, { hostname: "strong.example.com" });
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as View;
+    const responses = [
+      created,
+      await get(v),
+      await get(v, `/${body.id}`),
+      await get(v, `/${body.id}`, { "if-none-match": body.etag }),
+      await get(v, `/${body.id}/diagnosis`),
+      await get(v, "/hn_000000000000000000000000"),
+      await SELF.fetch(`${BASE}/api/v1/session`)
+    ];
+    expect(responses.map((r) => r.status)).toEqual([
+      201, 200, 200, 304, 200, 404, 204
+    ]);
+    for (const res of responses) {
+      expect(res.headers.get("cache-control")).toBe(NO_STORE_NO_TRANSFORM);
+    }
+  });
+
+  it("round-trips the header ETag through If-None-Match and If-Match", async () => {
+    const v = await visitor();
+    const body = (await (
+      await post(v, { hostname: "roundtrip.example.com" })
+    ).json()) as View;
+    const read = await get(v, `/${body.id}`);
+    const etag = read.headers.get("etag") ?? "";
+    expect(etag).toBe(body.etag);
+    expect(etag.startsWith("W/")).toBe(false);
+    expect(
+      (await get(v, `/${body.id}`, { "if-none-match": etag })).status
+    ).toBe(304);
+    const del = await send(v, "DELETE", `/${body.id}`, { "if-match": etag });
+    expect(del.status).toBe(202);
   });
 });

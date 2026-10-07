@@ -14,6 +14,7 @@ import {
 } from "./observability/log";
 import {
   NO_STORE,
+  NO_TRANSFORM,
   isAllowedOrigin,
   isWebSocketUpgrade,
   problem
@@ -79,7 +80,24 @@ export async function handleRequest(
       return response;
     }
   );
-  return withSecurityHeaders(res);
+  return withSecurityHeaders(withNoTransform(res));
+}
+
+// The edge compresses JSON and, when it does, weakens a strong ETag to W/"...". Then a
+// client that sends the header back in If-Match gets 412. no-transform stops the
+// compression, so every API response keeps the ETag exactly as the server wrote it.
+function withNoTransform(res: Response): Response {
+  const headers = new Headers(res.headers);
+  const current = headers.get("cache-control");
+  headers.set(
+    "cache-control",
+    current ? `${current}, ${NO_TRANSFORM}` : NO_TRANSFORM
+  );
+  return new Response(res.body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers
+  });
 }
 
 const HOSTNAME_SUBROUTES = new Set(["events", "check", "diagnosis", "retry"]);

@@ -25,7 +25,8 @@ const session = (headers: HeadersInit = {}) =>
 async function expectProblem(res: Response, status: number) {
   expect(res.status).toBe(status);
   expect(res.headers.get("content-type")).toBe("application/problem+json");
-  expect(res.headers.get("cache-control")).toBe("no-store");
+  // API paths also carry no-transform; other paths only no-store.
+  expect(res.headers.get("cache-control")).toContain("no-store");
   expect(res.headers.get("access-control-allow-origin")).toBeNull();
   const body = (await res.json()) as Record<string, unknown>;
   // Only the RFC 9457 members we set. No stack, no exception text.
@@ -51,7 +52,7 @@ describe("GET /api/v1/session", () => {
   it("creates a session when there is none", async () => {
     const res = await session({ "cf-connecting-ip": "10.0.0.1" });
     expect(res.status).toBe(204);
-    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("cache-control")).toBe("no-store, no-transform");
     const decoded = await sessionFrom(res);
     expect(decoded?.ok).toBe(true);
   });
