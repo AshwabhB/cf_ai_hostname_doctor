@@ -705,3 +705,20 @@ the user.
 - Accept a weak ETag in `If-Match` and `If-None-Match` (compare without `W/`), then redeploy.
 - Decide on `preview_urls`.
 - PROMPTS.md to be regenerated after deploy.
+
+**Follow-up: strong ETags and Preview URLs (2026-10-07).**
+- Every `/api/*` response now sends `Cache-Control: no-store, no-transform`, set in one
+  place in the router, so the edge no longer compresses API JSON and the ETag stays as
+  written. Static assets are still compressed. `"preview_urls": false` in `wrangler.jsonc`.
+- unit: 475 tests in 19 files. New: `no-store, no-transform` on 201, 200, 304, 404 and the
+  session 204; the header ETag round-trips through `If-None-Match` (304) and `If-Match` (202);
+  `preview_urls` is false. Removing the router change makes the first test fail.
+- Commit `ad6a08d`, deployed 2026-10-07T01:12:46Z, version
+  `c1f55fc6-e755-442d-ad66-bbecf5e8ded0`. No Preview URLs warning on deploy.
+- deployed, rechecked with `accept-encoding: gzip, br` on a fresh probe hostname: API responses
+  not compressed, ETag strong and equal to the body's, `If-None-Match` 304, `DELETE` with the
+  header ETag 202 `deleted` (which removed the probe). `/` still served with `br`. The Preview
+  URLs for both versions return 404.
+- The `W/` tolerance fallback was not needed and was not added.
+- Still open: the S11 smoke row `www.example.com` ends `failed` after 24 hours; PROMPTS.md to
+  be regenerated; the user's browser test.
