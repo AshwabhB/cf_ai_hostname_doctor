@@ -18,7 +18,7 @@ Hostname Doctor is a chat agent for that moment. You add a customer hostname and
 
 ![Hostname Doctor: a hostname added from chat, its records, and the live table](docs/screenshots/1440-add-hostname.jpg)
 
-**Live:** https://hostname-doctor.bhatnagarashwabh.workers.dev (pending, deployed in S11)
+**Live:** https://hostname-doctor.bhatnagarashwabh.workers.dev (deployed 2026-10-07)
 
 Built on Cloudflare Workers with the Agents SDK: Llama 3.3 70B (fp8-fast) on Workers AI,
 Durable Objects, Workflows and a React UI.
@@ -106,8 +106,8 @@ npm run deploy
 ```
 
 `wrangler secret put` reads the value from stdin when it is piped, so the secret is never
-shown. `npm run deploy` builds and runs `wrangler deploy`. Not deployed yet: that is stage
-S11.
+shown. `npm run deploy` builds and runs `wrangler deploy`. Deployed this way on 2026-10-07;
+see S11 in the [build log](docs/BUILD_LOG.md#s11-deploy-2026-10-07).
 
 ## Security
 

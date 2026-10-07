@@ -644,3 +644,64 @@ short script that drops blank lines and lines starting with `//`, `/*` or `*`:
 
 **Open issues.**
 - The live URL is a placeholder until S11. PROMPTS.md will be regenerated after deploy.
+
+## S11. Deploy (2026-10-07)
+
+**Deployed.** https://hostname-doctor.bhatnagarashwabh.workers.dev at 2026-10-07T00:08:57Z,
+Worker version `607582d9-ca5b-4ceb-86cb-27e3c971c689`, from commit `3997553` (S10 plus the
+`/healthz` fix below). Account: the logged-in account, nothing else on it touched,
+bought or upgraded. First deploy of `hostname-doctor`.
+
+**Before deploying.**
+- `npm run check` (471 tests then 472, build), `npm run spikes` (10), `npm audit` 0.
+- `wrangler deploy --dry-run` showed both Durable Objects (migration `v1`, the only one),
+  the workflow, AI, three rate limits and production vars only: the workers.dev origin,
+  `COOKIE_DEV_MODE=false`, `AI_KILL_SWITCH=false`. The `.dev.vars` copy in `dist/` is not
+  uploaded. No test, fixture or spike code in the bundle. 843 KiB gzipped.
+- Found and fixed: `/healthz` was not in `assets.run_worker_first`, so the assets layer
+  answered it with `index.html` (200) and the Worker never ran. Added, with a config test
+  that every path the router serves is covered (fails without the fix). Commit `3997553`.
+- `SESSION_SECRET`: generated in a pipe straight into `wrangler secret put`, never shown or
+  written. Wrangler created an empty draft Worker first, its default for a new name.
+- Deploy: `npm run deploy`. The new workers.dev name took about 3 minutes to start
+  answering; the first smoke attempt got `ECONNRESET` before that.
+
+**Smoke tests (deployed, 2026-10-07 00:12 to 00:17 UTC).**
+- Assets: `/` 200 with the CSP (including `connect-src` for our `wss`), nosniff,
+  no-referrer, no inline script; the app bundle and `/theme.js` 200.
+- `/healthz`: 200 `{"status":"ok"}`, `application/json`, `no-store`, no cookie.
+- Session: 204, `no-store`, cookie `__Host-hd_sid` with `Path=/; Secure; HttpOnly;
+  SameSite=Lax`, no `Domain`. Value never printed.
+- Wrong origin: POST from `https://evil.example`, from `http://localhost:5173` and with no
+  Origin all 403 problem JSON (so no local value reached production). Upgrade from
+  `https://evil.example` 403; from our origin 101.
+- Hostname: `www.example.com` created 201 `pending` with records and an ETag; `/check` 200
+  with `TXT_MISSING`, `CNAME_MISSING`. Its workflow run is running in production.
+- Chat (live model): "Why is www.example.com not verified yet?" called `explain_findings`
+  and named the exact TXT and CNAME records. First output 2,362 ms at the client, 2,165 ms
+  in `model_call`, total about 7 s.
+- Logs (`wrangler tail`): `api_request`, `transition`, `dns_check`, `tool_call` and
+  `model_call` lines with the hashed visitor and one correlation id per turn. No cookie
+  value anywhere in the tail. The capture was deleted afterwards.
+
+**Found in the smoke test.**
+- **ETag weakened at the edge.** Cloudflare compresses JSON responses and turns our strong
+  ETag header into `W/"..."`, so a client that sends the header back in `If-Match` gets 412
+  and `If-None-Match` never gives 304. Not seen locally, where nothing compresses. The
+  `etag` field in the body is unchanged, and a delete with it worked (202, `deleted`). The
+  UI is not affected: its delete uses the ETag from the card. Not fixed in this stage.
+- The cleanup delete of the smoke hostname got that 412, and its session cookie was not
+  kept, so `www.example.com` stays `pending` for that anonymous visitor. Its workflow gives
+  up after 24 hours and the row ends `failed`. A second probe hostname was deleted with
+  the body ETag, which terminated its workflow.
+- Workflow step logs did not appear in `wrangler tail`. The instance list shows the runs.
+- Wrangler enabled Preview URLs by default because `preview_urls` is not set. Writes there
+  are refused (origin not allowed), but reads work.
+
+**Checks run.** unit (above); deployed (above). Browser test on the live URL: pending, by
+the user.
+
+**Open issues.**
+- Accept a weak ETag in `If-Match` and `If-None-Match` (compare without `W/`), then redeploy.
+- Decide on `preview_urls`.
+- PROMPTS.md to be regenerated after deploy.
