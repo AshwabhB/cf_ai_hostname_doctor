@@ -14,7 +14,8 @@ import {
   SEVERITY_BADGE,
   STATE_BADGE,
   STATE_LABEL,
-  isHostnameState
+  isHostnameState,
+  type HostnameState
 } from "./format";
 import { Records, type RequiredRecords } from "./Records";
 import { AsciiName } from "./AsciiName";
@@ -48,9 +49,56 @@ function Card({
   );
 }
 
-function StateBadge({ state }: { state: unknown }) {
-  if (!isHostnameState(state)) return null;
-  return <Badge variant={STATE_BADGE[state]}>{STATE_LABEL[state]}</Badge>;
+// Looks up a hostname's current state in the live table, by its stored ASCII name.
+export type LiveState = (hostname: string) => string | undefined;
+
+export type CardState = {
+  state: HostnameState;
+  // Set when the badge is the state from when the tool ran, not the live one.
+  caption?: string;
+};
+
+// A card shows the hostname's live state while it is in the table. Once it is gone (for
+// example deleted), it falls back to the state the tool returned, labeled as such, so
+// an old state never reads as current.
+export function cardState(
+  tool: string,
+  toolState: unknown,
+  liveState: unknown
+): CardState | null {
+  if (isHostnameState(liveState)) return { state: liveState };
+  if (!isHostnameState(toolState)) return null;
+  return {
+    state: toolState,
+    caption: tool === "add_hostname" ? "when added" : "at the time"
+  };
+}
+
+function StateBadge({
+  tool,
+  output,
+  live
+}: {
+  tool: string;
+  output: Output;
+  live?: LiveState;
+}) {
+  const shown = cardState(
+    tool,
+    output.state,
+    live?.(String(output.hostname ?? ""))
+  );
+  if (!shown) return null;
+  return (
+    <>
+      <Badge variant={STATE_BADGE[shown.state]}>
+        {STATE_LABEL[shown.state]}
+      </Badge>
+      {shown.caption && (
+        <span className="text-xs text-kumo-subtle">{shown.caption}</span>
+      )}
+    </>
+  );
 }
 
 function Title({ children }: { children: ReactNode }) {
@@ -100,7 +148,8 @@ function Findings({ findings }: { findings: Output[] }) {
 function body(
   name: string,
   o: Output,
-  onDelete: (t: DeleteTarget) => void
+  onDelete: (t: DeleteTarget) => void,
+  live?: LiveState
 ): ReactNode {
   if (o.found === false || o.added === false || o.retried === false) {
     return (
@@ -129,7 +178,7 @@ function body(
             <Text size="sm" bold>
               {name === "add_hostname" ? `Added ${host(o)}` : host(o)}
             </Text>
-            <StateBadge state={o.state} />
+            <StateBadge tool={name} output={o} live={live} />
           </Title>
           <AsciiName ascii={String(o.hostname ?? "")} display={host(o)} />
           {o.records ? (
@@ -144,7 +193,7 @@ function body(
             <Text size="sm" bold>
               DNS check for {host(o)}
             </Text>
-            <StateBadge state={o.state} />
+            <StateBadge tool={name} output={o} live={live} />
           </Title>
           <Findings
             findings={Array.isArray(o.findings) ? (o.findings as Output[]) : []}
@@ -155,7 +204,7 @@ function body(
       return (
         <Title>
           <Text size="sm">Checking {host(o)} again</Text>
-          <StateBadge state={o.state} />
+          <StateBadge tool={name} output={o} live={live} />
         </Title>
       );
     case "propose_delete": {
@@ -193,10 +242,12 @@ function body(
 
 export function ToolCard({
   part,
-  onDelete
+  onDelete,
+  live
 }: {
   part: UIMessage["parts"][number];
   onDelete: (t: DeleteTarget) => void;
+  live?: LiveState;
 }) {
   if (!isToolUIPart(part)) return null;
   const name = getToolName(part);
@@ -229,5 +280,7 @@ export function ToolCard({
     );
   }
   if (part.state !== "output-available") return null;
-  return <Card>{body(name, (part.output ?? {}) as Output, onDelete)}</Card>;
+  return (
+    <Card>{body(name, (part.output ?? {}) as Output, onDelete, live)}</Card>
+  );
 }

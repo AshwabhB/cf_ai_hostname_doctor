@@ -24,7 +24,7 @@ import { ConfirmDelete, type DeleteTarget } from "./ui/ConfirmDelete";
 import { HostnameDrawer } from "./ui/HostnameDrawer";
 import { HostnameTable, type HostnameRow } from "./ui/HostnameTable";
 import { Markdown } from "./ui/Markdown";
-import { ToolCard } from "./ui/ToolCard";
+import { ToolCard, type LiveState } from "./ui/ToolCard";
 import { LIMITS } from "./config/limits";
 
 const STARTER_PROMPTS = [
@@ -128,11 +128,13 @@ function ConnectionStatus({ state }: { state: Connection }) {
 function Message({
   message,
   animating,
-  onDelete
+  onDelete,
+  live
 }: {
   message: UIMessage;
   animating: boolean;
   onDelete: (t: DeleteTarget) => void;
+  live: LiveState;
 }) {
   const isUser = message.role === "user";
   return (
@@ -140,7 +142,9 @@ function Message({
       {message.parts.map((part, i) => {
         const key = `${message.id}-${i}`;
         if (isToolUIPart(part))
-          return <ToolCard key={key} part={part} onDelete={onDelete} />;
+          return (
+            <ToolCard key={key} part={part} onDelete={onDelete} live={live} />
+          );
         if (part.type !== "text" || !part.text) return null;
         return isUser ? (
           <div key={key} className="flex justify-end">
@@ -167,7 +171,8 @@ function ChatPane({
   notice,
   onSend,
   onStop,
-  onDelete
+  onDelete,
+  live
 }: {
   messages: UIMessage[];
   status: string;
@@ -176,6 +181,7 @@ function ChatPane({
   onSend: (text: string) => void;
   onStop: () => void;
   onDelete: (t: DeleteTarget) => void;
+  live: LiveState;
 }) {
   const [input, setInput] = useState("");
   const end = useRef<HTMLDivElement>(null);
@@ -230,6 +236,7 @@ function ChatPane({
                 index === messages.length - 1
               }
               onDelete={onDelete}
+              live={live}
             />
           ))}
           <div ref={end} />
@@ -361,6 +368,12 @@ function Workspace() {
     stopRef.current = stop;
   }, [stop]);
 
+  // Tool cards show each hostname's live state from the table the server pushes.
+  const liveState = useCallback<LiveState>(
+    (hostname) => hostnames.find((h) => h.hostname === hostname)?.state,
+    [hostnames]
+  );
+
   // Keep the open drawer in step with live state changes.
   const openRow = open
     ? (hostnames.find((h) => h.id === open.id) ?? open)
@@ -406,6 +419,7 @@ function Workspace() {
       }}
       onStop={stop}
       onDelete={setDeleting}
+      live={liveState}
     />
   );
   // A refused tab never receives the table, so it says why instead of showing it empty.
