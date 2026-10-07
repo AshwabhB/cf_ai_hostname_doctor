@@ -648,7 +648,7 @@ short script that drops blank lines and lines starting with `//`, `/*` or `*`:
 ## S11. Deploy (2026-10-07)
 
 **Deployed.** https://hostname-doctor.bhatnagarashwabh.workers.dev at 2026-10-07T00:08:57Z,
-Worker version `607582d9-ca5b-4ceb-86cb-27e3c971c689`, from commit `3997553` (S10 plus the
+Worker version `607582d9-ca5b-4ceb-86cb-27e3c971c689`, from commit `09b325e` (S10 plus the
 `/healthz` fix below). Account: the logged-in account, nothing else on it touched,
 bought or upgraded. First deploy of `hostname-doctor`.
 
@@ -660,7 +660,7 @@ bought or upgraded. First deploy of `hostname-doctor`.
   uploaded. No test, fixture or spike code in the bundle. 843 KiB gzipped.
 - Found and fixed: `/healthz` was not in `assets.run_worker_first`, so the assets layer
   answered it with `index.html` (200) and the Worker never ran. Added, with a config test
-  that every path the router serves is covered (fails without the fix). Commit `3997553`.
+  that every path the router serves is covered (fails without the fix). Commit `09b325e`.
 - `SESSION_SECRET`: generated in a pipe straight into `wrangler secret put`, never shown or
   written. Wrangler created an empty draft Worker first, its default for a new name.
 - Deploy: `npm run deploy`. The new workers.dev name took about 3 minutes to start
@@ -713,7 +713,7 @@ the user.
 - unit: 475 tests in 19 files. New: `no-store, no-transform` on 201, 200, 304, 404 and the
   session 204; the header ETag round-trips through `If-None-Match` (304) and `If-Match` (202);
   `preview_urls` is false. Removing the router change makes the first test fail.
-- Commit `ad6a08d`, deployed 2026-10-07T01:12:46Z, version
+- Commit `b3693d5`, deployed 2026-10-07T01:12:46Z, version
   `c1f55fc6-e755-442d-ad66-bbecf5e8ded0`. No Preview URLs warning on deploy.
 - deployed, rechecked with `accept-encoding: gzip, br` on a fresh probe hostname: API responses
   not compressed, ETag strong and equal to the body's, `If-None-Match` 304, `DELETE` with the
@@ -742,7 +742,7 @@ they show the old state labeled "when added" (add) or "at the time" (other tools
 - unit: 478 tests in 20 files. New: `cardState` picks the live state, falls back with the
   label, and shows nothing for unknown states. The rendered card cannot be tested in the
   pool (Kumo hooks, the same two-React problem as S7), so it was checked live.
-- Commit `2fd3893`, deployed 2026-10-07T03:11:00Z, version
+- Commit `b30721c`, deployed 2026-10-07T03:11:00Z, version
   `710251d1-4361-427a-b4d0-5294a5570458`. `/healthz` and `/` 200 afterwards.
 - deployed, in the browser pane as a fresh visitor: the starter prompt added
   `shop.example.com` (one live turn); the card's badge matched the table. Asked to delete
